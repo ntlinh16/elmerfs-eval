@@ -1,21 +1,29 @@
 # Benchmarking the elmerfs on Grid5000 system
-This experiment measure the convergence time, performances and contentions (which described n detail later) of [elmerfs](https://github.com/scality/elmerfs) which is a file system using an [AntidoteDB](https://www.antidoteDB.eu/) cluster as backend.
+
+This project uses [cloudal](https://github.com/ntlinh16/cloudal) to perform a  full factorial experiment workflow automatically. This experiment measures the convergence time, the read/write performance and contentions (which described in detail later) of [elmerfs](https://github.com/scality/elmerfs), which is a file system using an [AntidoteDB](https://www.antidoteDB.eu/) cluster as a backend.
 
 
 ## Introduction
 
-The workflow of this experiment follow [the general experiment flowchart of cloudal](https://github.com/ntlinh16/cloudal/blob/master/docs/technical_detail.md#an-experiment-workflow-with-cloudal).
+The workflow of this experiment follows [the general experiment flowchart of cloudal](https://github.com/ntlinh16/cloudal/blob/master/docs/technical_detail.md#an-experiment-workflow-with-cloudal).
 
-The `create_combs_queue()` function is currently set for iteration, latency and benchmarks.
+The `create_combs_queue()` function generates combinations of the following parameters: iteration, latency and benchmarks.
 
-The `setup_env()` function (1) makes a reservation for the required infrastructure; and then (2) configuring these hosts by: deploys a Kubernetes cluster to manage a AntidoteDB cluster; elmerfs is deploy on hosts which run AntidoteDB instances.
+* `iteration: [1..2]`: the experiment will be repeat 5 times for a statistically significant result.
+* `latency: [20, 1000]`: while performing benchmark, the latency between AntidoteDB clusters is change from 20ms to 1 second
+* `latency_interval: logarithmic scale`: the increasing interval of latency will be calculated by logarithmic scale 
+* `benchmarks: [convergence, performances, Contentions]`: three benchmarks will be used to test elmerfs
 
-The `run_exp_workflow()` perform the following steps:
-1. Cleaning the experiment environment on related nodes
+The `setup_env()` function the provisioning and the configuring process
+* `provisioning`: makes a reservation for the required infrastructure;
+* `config_host()`: configuring these hosts by deploying a Kubernetes cluster to manage a AntidoteDB cluster; and then elmerfs is install on hosts which run AntidoteDB instances.
+
+The `run_exp_workflow()` performs the following steps:
+1. Clean the experiment environment on related nodes
 2. Set the latency for a specific run
-3. Performing a given benchmark
+3. Perform a given benchmark
 4. Reset the latency
-5. Retrieving the results.
+5. Retrieve the results.
 
 ## How to run the experiment
 
@@ -24,11 +32,12 @@ The `run_exp_workflow()` perform the following steps:
 There are two types of config files to perform this experiment.
 
 #### Setup environment config file
-The system config file provides three following information:
+The system config file `exp_setting_elmerfs_eval_g5k.yaml` provides three following information:
 
 * Infrastructure requirements: includes the number of clusters, name of cluster and the number of nodes for each cluster you want to provision on Grid5k system; which OS you want to deploy on reserved nodes; when and how long you want to provision nodes; etc.
 
-* Parameters: is a list of experiment parameters that represent different aspects of the system that you want to examine. Each parameter contains a list of possible values of that aspect. For example, I want to achieve a statistically significant results so that each experiment will be repeated 5 times  with parameter `iteration: [1..5]`.
+
+* Parameters: is a list of experiment parameters that represent different aspects of the system that you want to examine. Each parameter contains a list of possible values of that aspect. For example, I want to achieve statistically significant results so that each experiment will be repeated 5 times  with parameter `iteration: [1..5]`.
 
 * Experiment environment settings: the path to Kubernetes deployment files for Antidote; the elmerfs version information that you want to deploy; the topology of an AntidoteDB cluster; etc.
 
