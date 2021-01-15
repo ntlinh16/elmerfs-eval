@@ -1,16 +1,16 @@
-# Running elmerfs with an AntidoteDB backend on Grid5000
+# Benchmarking the elmerfs on Grid5000 system
 This experiment measure the convergence time, performances and contentions (which described n detail later) of [elmerfs](https://github.com/scality/elmerfs) which is a file system using an [AntidoteDB](https://www.antidoteDB.eu/) cluster as backend.
 
 
 ## Introduction
 
-The steps of this experiment follow [the general experiment flowchart of cloudal](https://github.com/ntlinh16/cloudal/blob/master/docs/technical_detail.md#an-experiment-workflow-with-cloudal).
+The workflow of this experiment follow [the general experiment flowchart of cloudal](https://github.com/ntlinh16/cloudal/blob/master/docs/technical_detail.md#an-experiment-workflow-with-cloudal).
 
 The `create_combs_queue()` function is currently set for iteration, latency and benchmarks.
 
 The `setup_env()` function (1) makes a reservation for the required infrastructure; and then (2) configuring these hosts by: deploys a Kubernetes cluster to manage a AntidoteDB cluster; elmerfs is deploy on hosts which run AntidoteDB instances.
 
-The `run_workflow()` perform the following steps:
+The `run_exp_workflow()` perform the following steps:
 1. Cleaning the experiment environment on related nodes
 2. Set the latency for a specific run
 3. Performing a given benchmark
