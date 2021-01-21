@@ -9,7 +9,7 @@ The workflow of this experiment follows [the general experiment flowchart of clo
 
 The `create_combs_queue()` function generates combinations of the following parameters: iteration, latency and benchmarks.
 
-The `setup_env()` function performs (1) the provisioning process to makes a reservation for the required infrastructure; and (2) configuring the provisioned hosts by deploying a Kubernetes cluster and AntidoteDB clusters; and then elmerfs is install on hosts which run AntidoteDB instances.
+The `setup_env()` function performs (1) the provisioning process to makes a reservation for the required infrastructure; and (2) configuring the provisioned hosts by deploying a Kubernetes cluster and AntidoteDB clusters; and then elmerfs is installed on hosts which run AntidoteDB instances.
 
 The `run_exp_workflow()` takes one combination as the input and performs the following steps:
 1. Clean the experiment environment on related nodes
