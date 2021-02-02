@@ -4,14 +4,17 @@ This project uses [cloudal](https://github.com/ntlinh16/cloudal) to automaticall
 
 ## I. Run the experiment
 
-### 1. Prepare the system config file
+### 1. Prepare the deployment and config files
 
-There are two types of config files to perform this experiment.
+There are three types of files to perform this deployment.
 
 #### AntidoteDB Kubernetes deployment files 
 
 I use Kubernetes deployment files to deploy an AntidoteDB cluster for this experiment. These files are provided in folder [antidotedb_yaml](https://github.com/ntlinh16/cloudal/tree/master/examples/experiment/elmerfs/antidotedb_yaml) and they work well for this experiment scenario. Check and modify these template files if you need any special configurations for AntidoteDB.
 
+#### Monitoring Kubernetes deployment files 
+
+[antidote_stats](https://github.com/AntidoteDB/antidote_stats) provides the configuration files for Grafana and Prometheus deployment. I use Kubernetes deployment files that make use of those configuration files to deploy Grafana and Prometheus services. These template files are provided in folder [monitoring_yaml](https://github.com/ntlinh16/cloudal/tree/master/examples/experiment/elmerfs/monitoring_yaml).
 
 #### Experiment environment config file
 
@@ -26,7 +29,7 @@ You need to clarify three following information in the `exp_setting_elmerfs_eval
     * `latency_interval: logarithmic scale`: the increasing interval of latency will be calculated by logarithmic scale
     * `benchmarks: [convergence, performances, contentions]`: three benchmarks will be used to test elmerfs
 
-* Experiment environment settings: the path to Kubernetes deployment files for AntidoteDB and monitoring system; the elmerfs version information that you want to deploy; the topology of an AntidoteDB cluster; etc.
+* Experiment environment settings: the path to the results directory; the path to Kubernetes deployment files for AntidoteDB and monitoring system; the elmerfs version information that you want to deploy; the topology of an AntidoteDB cluster; etc.
 ### 2. Run the experiment
 If you are running this experiment on your local machine, remember to run the VPN to [connect to Grid5000 system from outside](https://github.com/ntlinh16/cloudal/blob/master/docs/g5k_k8s_setting.md).
 
@@ -79,7 +82,7 @@ The `setup_env()` function performs (1) the provisioning process to make a reser
 The `run_exp_workflow()` takes one combination as the input and performs the following steps:
 1. Clean the experiment environment on related nodes
 2. Set the latency for a specific run
-3. Perform a given [benchmark workflow](https://github.com/ntlinh16/elmerfs-eval#benchmarks-workflow)
+3. Perform a given [benchmark workflow](https://github.com/ntlinh16/elmerfs-eval#iii-benchmark-workflows)
 4. Reset the latency to normal
 5. Retrieve the results.
 ## III. Benchmark workflows
