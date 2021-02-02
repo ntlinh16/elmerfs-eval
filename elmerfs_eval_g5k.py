@@ -36,6 +36,85 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                                       help="name of kube master node",
                                       default=None,
                                       type=str,)
+        self.args_parser.add_argument("--monitoring", dest="monitoring",
+                                      help="deploy Grafana and Prometheus for monitoring",
+                                      action="store_true")
+
+    def deploy_monitoring(self, kube_master, kube_namespace):
+        logger.info("Deploying monitoring system")
+        monitoring_k8s_dir = self.configs['exp_env']['monitoring_yaml_path']
+
+        logger.info("Deleting old deployment")
+        cmd = "rm -rf /root/antidote_stats"
+        execute_cmd(cmd, kube_master)
+
+        logger.debug("Init configurator: k8s_resources_configurator")
+        configurator = k8s_resources_configurator()
+
+        cmd = "git clone https://github.com/AntidoteDB/antidote_stats.git"
+        execute_cmd(cmd, kube_master)
+        logger.info("Setting to allow pods created on kube_master")
+        cmd = "kubectl taint nodes --all node-role.kubernetes.io/master-"
+        execute_cmd(cmd, kube_master, is_continue=True)
+
+        pods = configurator.get_k8s_resources_name(resource='pod',
+                                                   label_selectors='app=antidote',
+                                                   kube_namespace=kube_namespace)
+        antidote_info = ["%s.antidote:3001" % pod for pod in pods]
+
+        logger.debug('Modify the prometheus.yml file with antidote instances info')
+        file_path = os.path.join(monitoring_k8s_dir, 'prometheus.yml.template')
+        with open(file_path) as f:
+            doc = f.read().replace('antidotedc_info', '%s' % antidote_info)
+        prometheus_configmap_file = os.path.join(monitoring_k8s_dir, 'prometheus.yml')
+        with open(prometheus_configmap_file, 'w') as f:
+            f.write(doc)
+        configurator.create_configmap(file=prometheus_configmap_file,
+                                      namespace=kube_namespace,
+                                      configmap_name='prometheus-configmap')
+        logger.debug('Modify the deploy_prometheus.yaml file with kube_master info')
+        kube_master_info = configurator.get_k8s_resources(resource='node',
+                                                          label_selectors='kubernetes.io/hostname=%s' % kube_master)
+        for item in kube_master_info.items[0].status.addresses:
+            if item.type == 'InternalIP':
+                kube_master_ip = item.address
+        file_path = os.path.join(monitoring_k8s_dir, 'deploy_prometheus.yaml.template')
+        with open(file_path) as f:
+            doc = f.read().replace('kube_master_ip', '%s' % kube_master_ip)
+            doc = doc.replace("kube_master_hostname", '%s' % kube_master)
+        prometheus_deploy_file = os.path.join(monitoring_k8s_dir, 'deploy_prometheus.yaml')
+        with open(prometheus_deploy_file, 'w') as f:
+            f.write(doc)
+
+        logger.info("Starting Prometheus service")
+        configurator.deploy_k8s_resources(files=[prometheus_deploy_file], namespace=kube_namespace)
+        logger.info('Waiting until Prometheus instance is up')
+        configurator.wait_k8s_resources(resource='pod',
+                                        label_selectors="app=prometheus",
+                                        kube_namespace=kube_namespace)
+
+        logger.debug('Modify the deploy_grafana.yaml file with kube_master info')
+        file_path = os.path.join(monitoring_k8s_dir, 'deploy_grafana.yaml.template')
+        with open(file_path) as f:
+            doc = f.read().replace('kube_master_ip', '%s' % kube_master_ip)
+            doc = doc.replace("kube_master_hostname", '%s' % kube_master)
+        grafana_deploy_file = os.path.join(monitoring_k8s_dir, 'deploy_grafana.yaml')
+        with open(grafana_deploy_file, 'w') as f:
+            f.write(doc)
+
+        file = '/root/antidote_stats/monitoring/grafana-config/provisioning/datasources/all.yml'
+        cmd = """ sed -i "s/localhost/%s/" %s """ % (kube_master_ip, file)
+        execute_cmd(cmd, kube_master)
+
+        logger.info("Starting Grafana service")
+        configurator.deploy_k8s_resources(files=[grafana_deploy_file], namespace=kube_namespace)
+        logger.info('Waiting until Grafana instance is up')
+        configurator.wait_k8s_resources(resource='pod',
+                                        label_selectors="app=grafana",
+                                        kube_namespace=kube_namespace)
+        logger.info("Finish deploying monitoring system\n")
+        logger.info("Connect to Grafana at: http://%s:3000" % kube_master_ip)
+        logger.info("Connect to Prometheus at: http://%s:9090" % kube_master_ip)
 
     def clean_exp_env(self, elmerfs_hosts):
         logger.info("--Cleaning experiment environment")
@@ -80,7 +159,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         logger.info("host_src = %s" % host_src)
         logger.info("hosts_dest = %s" % hosts_dest)
 
-        logger.info("----Start checksum command on hosts")
+        logger.info("----Start checksum process on destination hosts")
         cmd = "touch /tmp/dc-$(hostname)/sample"
         execute_cmd(cmd, host_src)
         sleep(5)
@@ -88,11 +167,11 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             self.configs['exp_env']['convergence_checksum'])
         execute_cmd(cmd, hosts_dest, mode='start')
 
-        logger.info("----Copying file to elmerfs mountpoint on host_src (%s)" % host_src)
+        logger.info("----Copying file to elmerfs mount point on source host")
         cmd = "bash /tmp/convergence_files/timing_copy_file.sh /tmp/convergence_files/sample /tmp/dc-$(hostname)/sample /tmp/results/time_$(hostname)_start"
         execute_cmd(cmd, host_src)
 
-        logger.info("----Waiting for checksum process on all hosts")
+        logger.info("----Waiting for checksum process on all destination hosts complete")
         checksum_ok = False
         for i in range(100):
             sleep(15)
@@ -158,7 +237,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         return sweeper
 
     def install_benchsoftware(self, hosts):
-        logger.info("Installing benchmark software:")
+        logger.info("Starting installing benchmark software")
 
         logger.info("Installing tccommand")
         cmd = "curl -sSL https://raw.githubusercontent.com/thombashi/tcconfig/master/scripts/installer.sh | bash"
@@ -188,6 +267,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         cmd = "mv /tmp/convergence_files/%s /tmp/convergence_files/sample" % (
             test_file.split('/')[-1])
         execute_cmd(cmd, hosts)
+        logger.info("Finish installing benchmark software on hosts\n")
 
     def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts):
         logger.info("Starting deploying elmerfs on hosts")
@@ -538,22 +618,24 @@ class elmerfs_eval_g5k(performing_actions_g5k):
 
         logger.info("antidote_dc = %s" % antidote_dc)
 
-        message = ""
-        for cluster_name, cluster_info in antidote_dc.items():
-            message += (
-                """%s:
-                Host_names: %s
-                Pod_names: %s
-                Pod_ips: %s\n"""
-                % (cluster_name,
-                   cluster_info["host_names"],
-                   cluster_info["pod_names"],
-                   cluster_info["pod_ips"])
-            )
-        logger.info("Antidote topology:\n%s" % message)
+        # message = ""
+        # for cluster_name, cluster_info in antidote_dc.items():
+        #     message += (
+        #         """%s:
+        #         Host_names: %s
+        #         Pod_names: %s
+        #         Pod_ips: %s\n"""
+        #         % (cluster_name,
+        #            cluster_info["host_names"],
+        #            cluster_info["pod_names"],
+        #            cluster_info["pod_ips"])
+        #     )
+        # logger.info("Antidote topology:\n%s" % message)
 
         self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts)
         self.install_benchsoftware(elmerfs_hosts)
+        if self.args.monitoring is not None:
+            self.deploy_monitoring(kube_master, kube_namespace)
 
         return antidote_dc, elmerfs_hosts
 

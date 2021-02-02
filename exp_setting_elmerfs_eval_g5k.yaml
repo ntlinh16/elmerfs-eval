@@ -45,7 +45,7 @@ parameters:
     iteration: [1..5]
     latency: [20, 1000]
     latency_interval: logarithmic scale
-    benchmarks: [convergence, performances, Contentions]
+    benchmarks: [convergence, performances, contentions]
 
 
 #############################################
@@ -58,6 +58,8 @@ exp_env:
     results_dir: elmerfs_eval/results
     # the path to the kubernetes yaml files to deploy antidote cluster 
     antidote_yaml_path: elmerfs_eval/antidotedb_yaml
+    # the path to the kubernetes yaml files to deploy monitoring services (prometheus and grafana) 
+    monitoring_yaml_path: elmerfs-eval/monitoring_yaml
     # the url to elmerfs repository. the default value is https://github.com/scality/elmerfs
     elmerfs_repo: https://github.com/scality/elmerfs
     # the version of the elmerfs release. the value default is 'latest'
