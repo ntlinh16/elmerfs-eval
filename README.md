@@ -6,7 +6,7 @@ This project uses [cloudal](https://github.com/ntlinh16/cloudal) to automaticall
 
 ### 1. Prepare the deployment and config files
 
-There are three types of files to perform this deployment.
+There are three types of files to perform this experiment.
 
 #### AntidoteDB Kubernetes deployment files 
 
@@ -45,7 +45,7 @@ tail -f cloudal/examples/experiment/antidotedb/result/test.log
 ```
 Arguments:
 
-* `-k`: after finishing all the runs of the experiment, al provisioned nodes on Gris5000 will be kept alive so that you can connect to them, or if the experiment is interrupted in the middle, you can use these provisioned nodes to continue the experiments. This mechanism saves time since you don't have to reserve and deploy nodes again. If you do not use `-k`, when the script is finished or interrupted, all your reserved nodes will be deleted.
+* `-k`: after finishing all the runs of the experiment, all provisioned nodes on Gris5000 will be kept alive so that you can connect to them, or if the experiment is interrupted in the middle, you can use these provisioned nodes to continue the experiments. This mechanism saves time since you don't have to reserve and deploy nodes again. If you do not use `-k`, when the script is finished or interrupted, all your reserved nodes will be deleted.
 * `--monitoring`: the script will deploy [Grafana](https://grafana.com/) and [Prometheus](https://prometheus.io/) as an AntidoteDB monitoring system. If you use this option, please make sure that you provide the corresponding Kubernetes deployment files. You can connect to the url provided in the log to access the monitoring UI (i.e., `http://<kube_master_ip>:3000`). The default account credential is `admin/admin`. When login successfully, you can search for `Antidote` to access the pre-defined AntidoteDB dashboard.
 <p align="center">
     <br>
@@ -71,6 +71,17 @@ python elmerfs_eval_g5k.py --system_config_file exp_setting_elmerfs_eval_g5k.yam
 ```
 This command re-deploy the AntidoteDB clusters, elmerfs instances and monitoring system, then continues to run the experiment workflow for the remaining combinations on the pre-deployed infrastructure which are the provisioned nodes and the deployed Kubernetes cluster.
 
+### 4. Parse the results
+After finishing the experiment, all the data will be downloaded to your given result directory.
+To parse the results in to csv file for analyzing later, run the command:
+
+```bash
+python parse_result.py -i <path/to/your/result/directory> -o <path/to/the/output/result/file> OPTION
+```
+for example:
+```bash
+python parse_result.py -i results -o results/convergence.csv --convergence
+```
 ## II. Experiment workflow
 
 The workflow of this experiment follows [the general experiment flowchart of cloudal](https://github.com/ntlinh16/cloudal/blob/master/docs/technical_detail.md#an-experiment-workflow-with-cloudal).
