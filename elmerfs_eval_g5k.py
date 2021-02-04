@@ -618,23 +618,9 @@ class elmerfs_eval_g5k(performing_actions_g5k):
 
         logger.info("antidote_dc = %s" % antidote_dc)
 
-        # message = ""
-        # for cluster_name, cluster_info in antidote_dc.items():
-        #     message += (
-        #         """%s:
-        #         Host_names: %s
-        #         Pod_names: %s
-        #         Pod_ips: %s\n"""
-        #         % (cluster_name,
-        #            cluster_info["host_names"],
-        #            cluster_info["pod_names"],
-        #            cluster_info["pod_ips"])
-        #     )
-        # logger.info("Antidote topology:\n%s" % message)
-
         self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts)
         self.install_benchsoftware(elmerfs_hosts)
-        if self.args.monitoring is not None:
+        if self.args.monitoring:
             self.deploy_monitoring(kube_master, kube_namespace)
 
         return antidote_dc, elmerfs_hosts
