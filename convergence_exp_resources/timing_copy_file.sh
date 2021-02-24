@@ -19,4 +19,4 @@ echo $cur_hash
 if [ $hash == $cur_hash ]; then
     echo "checksum OK"
     echo "1" >> $checksum_path
-
+fi
