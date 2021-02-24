@@ -28,6 +28,8 @@ spec:
             app: antidote
       containers:
       - env:
+        - name: ANTIDOTE_TXN_CERT
+          value: 'false'
         - name: SHORT_NAME_PREFIX
           value: ''
         - name: RING_SIZE
