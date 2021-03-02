@@ -5,6 +5,8 @@ set -u
 MOUNTPOINT=$1
 RESULTS=$2
 EXPECTED_NODE_COUNT=$3
+UID=$4
+
 STOPF="/tmp/stop"
 COMMON="${MOUNTPOINT}/common"
 BENCH_USER="$(hostname)-efs"
@@ -30,14 +32,14 @@ function wait_ready {
 function repeat {
     local REMAINING="${N_TIMES}"
     while [ ! -f "${STOPF}" ] && [ $REMAINING -gt 0 ]; do
-        sudo -u "${BENCH_USER}" $@
+        $@
         REMAINING=$(($REMAINING-1))
     done
 }
 
 function once {
     if [ ! -f "${STOPF}" ]; then
-        sudo -u "${BENCH_USER}" $@
+        $@
     fi
 }
 
@@ -64,7 +66,7 @@ function bench {
 }
 
 # 1. Operations will be done as an user specific to each node
-useradd "${BENCH_USER}" || true
+useradd "${BENCH_USER}" -u "${UID}" -g "${UID}" || true
 
 # 2. Wait for every node that will run the actual benchmark to be up and
 # waiting
