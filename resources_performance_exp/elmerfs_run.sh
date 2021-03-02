@@ -9,7 +9,7 @@ ELMERFS_UID=$4
 
 STOPF="/tmp/stop"
 COMMON="${MOUNTPOINT}/common"
-BENCH_USER="$(hostname)-efs"
+BENCH_USER="$(hostname)_bench"
 READY="${MOUNTPOINT}/ready"
 N_TIMES=5
 
