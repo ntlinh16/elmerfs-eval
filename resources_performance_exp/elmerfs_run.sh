@@ -5,7 +5,7 @@ set -u
 MOUNTPOINT=$1
 RESULTS=$2
 EXPECTED_NODE_COUNT=$3
-UID=$4
+ELMERFS_UID=$4
 
 STOPF="/tmp/stop"
 COMMON="${MOUNTPOINT}/common"
@@ -66,7 +66,7 @@ function bench {
 }
 
 # 1. Operations will be done as an user specific to each node
-useradd "${BENCH_USER}" -u "${UID}" -g "${UID}" || true
+useradd "${BENCH_USER}" -u "${ELMERFS_UID}" || true
 
 # 2. Wait for every node that will run the actual benchmark to be up and
 # waiting
