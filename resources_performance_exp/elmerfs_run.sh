@@ -15,15 +15,24 @@ N_TIMES=5
 
 function wait_ready {
     local EXPECTED_NODE_COUNT=$1
+    local N=50 
 
     while [ ! -f "${STOPF}" ]; do
+        if [ "$N" -eq 0 ]; then
+            touch "${RESULTS}/${BENCH_USER}_notReady.txt"
+            echo "Cannot wait until ready."
+            exit
+        fi
+
         local FOUND=$(ls -1 ${READY} | wc -l)
         if [ "${FOUND}" == "${EXPECTED_NODE_COUNT}" ]; then
             break
         fi
+        ((N=N-1))
 
         echo "Waiting for readiness... sleep"
-        sleep 1
+        sleep 3
+
     done
 
     echo "Ready."
@@ -66,7 +75,7 @@ function bench {
 }
 
 # 1. Operations will be done as an user specific to each node
-useradd "${BENCH_USER}" -u "${ELMERFS_UID}" || true
+#useradd "${BENCH_USER}" -u "${ELMERFS_UID}" || true
 
 # 2. Wait for every node that will run the actual benchmark to be up and
 # waiting
