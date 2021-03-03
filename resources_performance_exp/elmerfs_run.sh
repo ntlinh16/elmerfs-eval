@@ -15,7 +15,7 @@ N_TIMES=5
 
 function wait_ready {
     local EXPECTED_NODE_COUNT=$1
-    local N=50 
+    local N=3000
 
     while [ ! -f "${STOPF}" ]; do
         if [ "$N" -eq 0 ]; then
@@ -31,7 +31,7 @@ function wait_ready {
         ((N=N-1))
 
         echo "Waiting for readiness... sleep"
-        sleep 3
+        sleep 0.1
 
     done
 
