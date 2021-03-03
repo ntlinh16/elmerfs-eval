@@ -36,6 +36,7 @@ function wait_ready {
     done
 
     echo "Ready."
+    touch "/tmp/$(hostname)_ready.txt"
 }
 
 function repeat {
@@ -79,7 +80,7 @@ function bench {
 
 # 2. Wait for every node that will run the actual benchmark to be up and
 # waiting
-
+rm "/tmp/$(hostname)_ready.txt"
 touch "${READY}/${HOSTNAME}"
 wait_ready "${EXPECTED_NODE_COUNT}"
 
