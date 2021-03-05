@@ -7,7 +7,7 @@
 
 
 # the duration to keep the reserved nodes running
-walltime: 5:00:00
+walltime: 3:00:00
 
 # the time when you want the nodes to be started.
 # the date format is "YYYY-MM-DD HH:MM:SS"
@@ -26,10 +26,10 @@ custom_image: null
 # If you declare your clusters information in the section: Experiment Environment Settings (see below),
 # you can ignore this section
 clusters:
-  - cluster: econome
-    n_nodes: 1
-  - cluster: paravance
-    n_nodes: 2
+  - cluster: 
+    n_nodes: 
+  - cluster: 
+    n_nodes: 
 
 
 #################################
@@ -42,10 +42,15 @@ parameters:
     # each aspect has a list of possible values to try,
 
     # the number of repetitions for each experiment
-    iteration: [1..5]
-    latency: [20, 1000]
-    latency_interval: logarithmic scale
-    benchmarks: [convergence, performances, contentions]
+    iteration: [11..20]
+    # iteration: 1
+    latency: 0
+    latency_interval:
+    # latency_interval: logarithmic scale
+    benchmarks: performance
+    # benchmarks: [convergence_min, convergence_random, convergence_fix, copy_time, performances, contentions]
+
+    
 
 
 #############################################
@@ -55,19 +60,32 @@ parameters:
 #############################################
 exp_env:
     # the path to the results directory
-    results_dir: elmerfs_eval/results
+    results_dir: elmerfs-eval/exp_run/05March_lock_performance
     # the path to the kubernetes yaml files to deploy antidote cluster 
-    antidote_yaml_path: elmerfs_eval/antidotedb_yaml
+    antidote_yaml_path: elmerfs-eval/antidotedb_yaml
+  
     # the path to the kubernetes yaml files to deploy monitoring services (prometheus and grafana) 
     monitoring_yaml_path: elmerfs-eval/monitoring_yaml
     # the url to elmerfs repository. the default value is https://github.com/scality/elmerfs
     elmerfs_repo: https://github.com/scality/elmerfs
     # the version of the elmerfs release. the value default is 'latest'
     elmerfs_version: latest
+    # the path to the binary elmerfs. If you provide this information, elmerfs is not built from the repo
+    elmerfs_path: /tmp/elmerfs
+
+    # url to download a test file for convergence experiment
+    convergence_test_file: https://repo.anaconda.com/miniconda/Miniconda2-latest-MacOSX-x86_64.sh
+    # SHA256 checksum of convergence_test_file
+    convergence_checksum: 0e2961e20a2239c140766456388beba6630f0c869020d2bd1870c3d040980b45
 
     # the site that kube master node will be deployed in (used for deploying antidote cluster).
     # if it is null, then the k8s master node will be deployed on the first site you specify in the file clusters below
     kube_master_site: dahu
     # the sites that all the AntidotedDB data centers will be deployed.
-    antidote_clusters: [dahu, econome]
-    n_antidotedb_per_dc: 3
+    antidote_clusters: 
+      - cluster: nova
+        n_antidotedb_per_dc: 5
+      - cluster: dahu
+        n_antidotedb_per_dc: 5
+      - cluster: paravance
+        n_antidotedb_per_dc: 5
