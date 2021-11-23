@@ -33,7 +33,7 @@ spec:
         - name: SHORT_NAME_PREFIX
           value: ''
         - name: RING_SIZE
-          value: '16'
+          value: '64'
         - name: PB_PORT
           value: '8087'
         - name: METRICS_PORT

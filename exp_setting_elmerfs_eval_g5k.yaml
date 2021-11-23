@@ -60,12 +60,12 @@ parameters:
 #############################################
 exp_env:
     # the path to the results directory
-    results_dir: elmerfs-eval/exp_run/05March_lock_performance
+    results_dir: elmerfs-eval/result
     # the path to the kubernetes yaml files to deploy antidote cluster 
-    antidote_yaml_path: elmerfs-eval/antidotedb_yaml
+    antidote_yaml_path: elmerfs-eval/exp_config_files/antidotedb_yaml
   
     # the path to the kubernetes yaml files to deploy monitoring services (prometheus and grafana) 
-    monitoring_yaml_path: elmerfs-eval/monitoring_yaml
+    monitoring_yaml_path: elmerfs-eval/exp_config_files/monitoring_yaml
     # the url to elmerfs repository. the default value is https://github.com/scality/elmerfs
     elmerfs_repo: https://github.com/scality/elmerfs
     # the version of the elmerfs release. the value default is 'latest'
@@ -81,7 +81,7 @@ exp_env:
     # the site that kube master node will be deployed in (used for deploying antidote cluster).
     # if it is null, then the k8s master node will be deployed on the first site you specify in the file clusters below
     kube_master_site: dahu
-    # the sites that all the AntidotedDB data centers will be deployed.
+    # the sites that all the AntidoteDB data centers will be deployed.
     antidote_clusters: 
       - cluster: nova
         n_antidotedb_per_dc: 5
