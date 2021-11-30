@@ -1,0 +1,64 @@
+---
+#########################
+#                       #
+#     Infrastructures   #
+#                       #
+#########################
+
+# your authorization information
+endpoint: <your_endpoint>
+application_key: <your_application_key>
+application_secret: <your_application_secret> 
+consumer_key: <your_consumer_key> 
+project_id: <your_project_id> 
+
+instance_type: b2-7
+# The Flex option opts for 50 GB storage, providing faster snapshots and the ability to downgrade later on.
+flexible_instance: False
+image: Debian 11
+
+#################################
+#                               #
+#     Experiment Parameters     #
+#                               #
+#################################
+parameters:
+    # the number of repetitions of each experiment
+    iteration: [1..10]
+    
+    # the number of AntidoteDB nodes of one DC
+    n_antidotedb_per_dc: 3
+
+    latency: 0
+    latency_interval:
+    # latency_interval: logarithmic scale
+    benchmarks: filebench
+
+    
+
+#############################################
+#                                           #
+#     Experiment Environment Settings       #
+#                                           #
+#############################################
+exp_env:
+    # the path to th results directory
+    results_dir: elmerfs-eval/results
+    # the path to the kubernetes yaml template files to deploy 
+    # Antidote cluster, Antidote monitoring services (prometheus and grafana) and FMKe benchmark
+    antidote_yaml_path: elmerfs-eval/exp_config_files/antidotedb_yaml
+    monitoring_yaml_path: elmerfs-eval/exp_config_files/monitoring_yaml
+    elmerfs_repo: https://github.com/scality/elmerfs
+    # the version of the elmerfs release. the value default is 'latest'
+    elmerfs_version: latest
+    # the path to the binary elmerfs. If you provide this information, elmerfs is not built from the repo
+    elmerfs_path: /tmp/elmerfs
+    ### Information of kubernetes master and sites of AntidoteDB
+
+    # You should declare the site that kubernetes master node will be deployed in.
+    # If it is null, then the k8s master node will be deployed on the first site you specify in the list of clusters below
+    kube_master_site: SBG5
+    # The region code name on OVHCloud that you want to deploy AntidoteDB data centers.
+    clusters: [SBG5, SGP1, BHS5]
+
+
