@@ -19,12 +19,12 @@ If you are running this experiment on your local machine, remember to run the VP
 Then, run the following command:
 
 ```bash
-cd cloudal/examples/experiment/elmerfs/
+cd elmerfs-eval/grid5k/
 python elmerfs_eval_g5k.py --system_config_file exp_setting_elmerfs_eval_g5k.yaml -k --monitoring &> result/test.log
 ```
 You can watch the log by:
 ```bash
-tail -f cloudal/examples/experiment/antidotedb/result/test.log 
+tail -f elmerfs-eval/grid5k/result/test.log 
 ```
 Arguments:
 
@@ -41,7 +41,7 @@ If the script is interrupted by unexpected reasons. You can re-run the experimen
 
 a. If your reserved hosts are dead, you just run the same above command:
 ```bash
-cd cloudal/examples/experiment/elmerfs/
+cd elmerfs-eval/grid5k
 python elmerfs_eval_g5k.py --system_config_file exp_setting_elmerfs_eval_g5k.yaml -k --monitoring &> result/test.log
 ```
 This command performs `setup_env()` to provision and configure the required experiment environment; and then run the experiment workflow with the remaining combinations.
@@ -49,7 +49,7 @@ This command performs `setup_env()` to provision and configure the required expe
 b. If your reserved hosts are still alive, you can give it to the script (to ignore the provisioning process):
 
 ```bash
-cd cloudal/examples/experiment/elmerfs/
+cd elmerfs-eval/grid5k
 python elmerfs_eval_g5k.py --system_config_file exp_setting_elmerfs_eval_g5k.yaml -k -j <site1:oar_job_id1,site2:oar_job_id2,...> --no-deploy-os --kube-master <host_name_of_kubernetes_master> --monitoring &> result/test.log
 ```
 This command re-deploy the AntidoteDB clusters, elmerfs instances and monitoring system, then continues to run the experiment workflow for the remaining combinations on the pre-deployed infrastructure which are the provisioned nodes and the deployed Kubernetes cluster.

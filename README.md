@@ -3,7 +3,7 @@
 This project uses [cloudal](https://github.com/ntlinh16/cloudal) to automatically perform a full factorial experiment workflow which measures the convergence time, the read/write performance and contentions of [elmerfs](https://github.com/scality/elmerfs), which is a file system using an [AntidoteDB](https://www.antidoteDB.eu/) cluster as a backend.
 
 If you do not install and configure all dependencies to use cloudal, please follow the [instruction](https://github.com/ntlinh16/cloudal)
-## II. Experiment workflow
+## I. Experiment workflow
 
 The workflow of this experiment follows [the general experiment flowchart of cloudal](https://github.com/ntlinh16/cloudal/blob/master/docs/technical_detail.md#an-experiment-workflow-with-cloudal).
 
@@ -18,7 +18,7 @@ Then, the `run_exp_workflow()` takes one combination as the input and performs t
 4. Reset the latency to normal
 5. Retrieve the results.
 
-## I. How to run the experiment
+## II. How to run the experiment
 ### 1. Clone the repository:
 Clone the project from the git repo:
 ```
@@ -34,15 +34,15 @@ In this experiment, I use Kubernetes deployment (YAML) files to deploy and manag
 
 #### 2.2. Experiment environment config file
 
-This file contains the infrastructure information as well as the experiment parameters for your experiments. It depends on where you want to run the experiments, on Grid5000 or OVH platform, you have to provide different information. Following the next Section to modify this configuration file.
+This file contains the infrastructure requirements as well as the experiment parameters of your experiments. It depends on where you want to run the experiments, Grid5000 or OVH platform, you have to provide different information. Follow the next Section to modify this configuration information.
 
 ### 3. Run the experiment
 
 To run this experiment on specific cloudal system, please find the detail instruction in the following links:
 
-[Running on Grid5000]()
+[Running on Grid5000](https://github.com/ntlinh16/elmerfs-eval/tree/main/grid5k#readme)
 
-[Running on OVH]()
+[Running on OVH](https://github.com/ntlinh16/elmerfs-eval/blob/tree/main/ovh#readme)
 
 ### 4. Parse the results
 After finishing the experiment, all the data will be downloaded to your given result directory.
@@ -82,4 +82,11 @@ In this scenario, the workflow of each run is similar to the scenario of `conver
 #### Convergence time of sync a folder
 
 In this scenario, the workflow of each run is similar to the scenario of `convergence time of sync a single file`. However, instead of copy a file to the elmerfs mount point, we create a folder tree. We want to evaluate how does latency impact to folder creating operation.
+
+## Docker images used in this project
+I use Docker images to pre-build the environment for AntidoteDB services. All images are on Docker repository:
+
+* antidotedb/antidote:latest
+* peterzel/antidote-connect
+
 

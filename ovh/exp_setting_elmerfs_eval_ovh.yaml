@@ -13,9 +13,10 @@ consumer_key: <your_consumer_key>
 project_id: <your_project_id> 
 
 instance_type: b2-7
+image: Debian 11
 # The Flex option opts for 50 GB storage, providing faster snapshots and the ability to downgrade later on.
 flexible_instance: False
-image: Debian 11
+
 
 #################################
 #                               #
