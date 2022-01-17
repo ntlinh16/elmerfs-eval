@@ -24,6 +24,12 @@ Clone the project from the git repo:
 ```
 git clone https://github.com/ntlinh16/elmerfs-eval.git
 ```
+Install the 
+
+```
+pip install ovh
+```
+
 ### 2. Prepare the deployment and configuration files
 
 Before running the experiments, you have to prepare the following files:
@@ -38,7 +44,7 @@ This file contains the infrastructure requirements as well as the experiment par
 
 ### 3. Run the experiment
 
-To run this experiment on specific cloudal system, please find the detail instruction in the following links:
+To run this experiment on specific cloud system, please find the detail instruction in the following links:
 
 [Running on Grid5000](https://github.com/ntlinh16/elmerfs-eval/tree/main/grid5k#readme)
 

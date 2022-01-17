@@ -1,5 +1,6 @@
 ## 1. Instantiate API Keys for your script
-Visit https://api.ovh.com/createToken to create your credentials
+Visit https://api.ovh.com/createToken to create your credentials.
+Depending on your script, you can add the rights (get, put, post, or delete) and the path (e.g. /me or /* ...)
 
 ## 2. Prepare the configuration files
 
