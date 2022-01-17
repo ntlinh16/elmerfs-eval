@@ -24,7 +24,7 @@ Clone the project from the git repo:
 ```
 git clone https://github.com/ntlinh16/elmerfs-eval.git
 ```
-Install the 
+Install the python wrapper:
 
 ```
 pip install ovh
