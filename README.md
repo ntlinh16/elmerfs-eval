@@ -24,12 +24,6 @@ Clone the project from the git repo:
 ```
 git clone https://github.com/ntlinh16/elmerfs-eval.git
 ```
-Install the python wrapper:
-
-```
-pip install ovh
-```
-
 ### 2. Prepare the deployment and configuration files
 
 Before running the experiments, you have to prepare the following files:
@@ -48,7 +42,7 @@ To run this experiment on specific cloud system, please find the detail instruct
 
 [Running on Grid5000](https://github.com/ntlinh16/elmerfs-eval/tree/main/grid5k#readme)
 
-[Running on OVH](https://github.com/ntlinh16/elmerfs-eval/blob/tree/main/ovh#readme)
+[Running on OVH](https://github.com/ntlinh16/elmerfs-eval/tree/main/ovh#readme)
 
 ### 4. Parse the results
 After finishing the experiment, all the data will be downloaded to your given result directory.

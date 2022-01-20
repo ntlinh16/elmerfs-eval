@@ -18,10 +18,12 @@ You need to clarify three following information in the `exp_setting_elmerfs_eval
 * Experiment environment settings: the path to the results directory; the path to Kubernetes deployment files for AntidoteDB and monitoring system; the elmerfs version information that you want to deploy; the topology of an AntidoteDB cluster; etc.
 
 ## 3. Run the experiment
+To deploy AntidoteDB as storage cluster, on each physical node, you may want to create an additional volume for storage. If you want to do that, you have to create the volumes before hand. Then, you can use `--attach_volume` option to attache the voulume.
+
 
 ```bash
 cd elmerfs-eval/ovh
-python elmerfs_eval_ovh.py --system_config_file exp_setting_elmerfs_eval_ovh.yaml -k --monitoring &> result/test.log
+python elmerfs_eval_ovh.py --system_config_file exp_setting_elmerfs_eval_ovh.yaml --monitoring &> result/test.log
 ```
 
 You can watch the log by:
