@@ -41,15 +41,18 @@ parameters:
     # describer here the list of different aspects that you want to examine in your experiment
     # each aspect has a list of possible values to try,
 
-    # the number of repetitions for each experiment
-    iteration: [11..20]
-    # iteration: 1
-    latency: 0
-    latency_interval:
-    # latency_interval: logarithmic scale
-    benchmarks: performance
-    # benchmarks: [convergence_min, convergence_random, convergence_fix, copy_time, performances, contentions]
+    # the number of repetitions of each experiment
+    iteration: [1..10]
 
+    # the information for the workload
+    benchmarks: ['mailserver', 'videoserver']
+    duration: 600
+    n_client: [1,2,3]
+
+    ### configuration of topology on 1 site (or Grid5k cluster)
+    # the number of AntidoteDB nodes
+    n_nodes_per_dc: [3,5,7,9,12]
+    
     
 
 
@@ -73,19 +76,8 @@ exp_env:
     # the path to the binary elmerfs. If you provide this information, elmerfs is not built from the repo
     elmerfs_path: /tmp/elmerfs
 
-    # url to download a test file for convergence experiment
-    convergence_test_file: https://repo.anaconda.com/miniconda/Miniconda2-latest-MacOSX-x86_64.sh
-    # SHA256 checksum of convergence_test_file
-    convergence_checksum: 0e2961e20a2239c140766456388beba6630f0c869020d2bd1870c3d040980b45
-
     # the site that kube master node will be deployed in (used for deploying antidote cluster).
     # if it is null, then the k8s master node will be deployed on the first site you specify in the file clusters below
-    kube_master_site: dahu
+    kube_master_site: paravance
     # the sites that all the AntidoteDB data centers will be deployed.
-    antidote_clusters: 
-      - cluster: nova
-        n_antidotedb_per_dc: 5
-      - cluster: dahu
-        n_antidotedb_per_dc: 5
-      - cluster: paravance
-        n_antidotedb_per_dc: 5
+    antidote_clusters: [paravance]

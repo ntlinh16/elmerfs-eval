@@ -2,13 +2,9 @@ from logging import raiseExceptions
 import os
 import shutil
 import traceback
-import math
 import random
 
 from time import sleep
-from humanfriendly.terminal import have_windows_native_ansi_support
-
-import kubernetes
 
 from cloudal.utils import (
     get_logger,
@@ -24,7 +20,7 @@ from cloudal.configurator import (
     k8s_resources_configurator,
     packages_configurator,
 )
-from cloudal.experimenter import create_combs_queue, is_job_alive, get_results
+from cloudal.experimenter import create_combs_queue, is_job_alive, get_results, define_parameters
 
 from execo_g5k import oardel
 from execo_engine import slugify
@@ -34,10 +30,14 @@ import yaml
 logger = get_logger()
 
 
+class CancelCombException(Exception):
+    pass
+
+
 class elmerfs_eval_g5k(performing_actions_g5k):
     def __init__(self, **kwargs):
         super(elmerfs_eval_g5k, self).__init__()
-        self.args_parser.add_argument("--kube-master",
+        self.args_parser.add_argument("--kube_master",
                                       dest="kube_master",
                                       help="name of kube master node",
                                       default=None,
@@ -122,295 +122,125 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         logger.info("Connect to Grafana at: http://%s:3000" % kube_master_ip)
         logger.info("Connect to Prometheus at: http://%s:9090" % kube_master_ip)
 
-    def clean_exp_env(self, elmerfs_hosts):
-        logger.info("--Cleaning experiment environment")
-        cmd = "rm -f /tmp/results/*"
-        execute_cmd(cmd, elmerfs_hosts)
-        cmd = "rm -f /tmp/dc-$(hostname)/*"
-        execute_cmd(cmd, elmerfs_hosts)
+    def clean_exp_env(self, kube_namespace):
+        logger.info('1. Deleting all k8s resource from the previous run in namespace "%s"' % kube_namespace)
+        logger.info('Delete namespace "%s" to delete all the resources, then create it again' % kube_namespace)
+        configurator = k8s_resources_configurator()
+        configurator.delete_namespace(kube_namespace)
+        configurator.create_namespace(kube_namespace)
 
-    def set_latency(self, latency, antidote_dc):
-        """Limit the latency in host"""
-        logger.info("--Setting network latency=%s on hosts" % latency)
-        latency = latency/2
-        for cur_cluster, cur_cluster_info in antidote_dc.items():
-            other_clusters = {cluster_name: cluster_info
-                              for cluster_name, cluster_info in antidote_dc.items() if cluster_name != cur_cluster}
+    def run_mailserver(self, elmerfs_hosts, duration, n_client):
+        if n_client == 100:
+            n_hosts = 1
+        else:
+            n_hosts = n_client
 
-            for _, cluster_info in other_clusters.items():
-                for pod_ip in cluster_info['pod_ips']:
-                    cmd = "tcset flannel.1 --delay %s --network %s" % (latency, pod_ip)
-                    execute_cmd(cmd, cur_cluster_info['host_names'])
+        hosts = random.sample(elmerfs_hosts, n_hosts)
+        logger.info("Dowloading Filebench configuration file")
+        cmd = "wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N"
+        execute_cmd(cmd, hosts)
 
-    def reset_latency(self, antidote_dc):
-        """Delete the Limitation of latency in host"""
-        logger.info("--Remove network latency on hosts")
-        for _, cluster_info in antidote_dc.items():
-            cmd = "tcdel flannel.1 --all"
-            execute_cmd(cmd, cluster_info['host_names'])
+        logger.info('Editing the configuration file')
+        cmd = 'sed -i "s/tmp/tmp\/dc-$(hostname)/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/run 60/run %s/g" /tmp/varmail.f' % duration
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/name=bigfileset/name=bigfileset-$(hostname)/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/meandirwidth=1000000/meandirwidth=1000/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        if n_client != 100:
+            cmd = 'sed -i "s/nthreads=16/nthreads=32/g" /tmp/varmail.f'
+            execute_cmd(cmd, hosts)
 
-    def copy_time(self, comb, kube_master):
-        list_hosts = [host for host in self.hosts if host != kube_master]
+        logger.info('Clearing cache ')
+        cmd = 'rm -rf /tmp/dc-$(hostname)/bigfileset'
+        execute_cmd(cmd, hosts)
+        cmd = 'sync; echo 3 > /proc/sys/vm/drop_caches'
+        execute_cmd(cmd, hosts)
 
-        # choose the smallest cluster to perform copy
-        cluster = min(self.configs["exp_env"]["antidote_clusters"],
-                      key=lambda x: x["n_antidotedb_per_dc"])
-        # pick 1 host in the chosen cluster
-        host = [host for host in list_hosts if host.startswith(cluster["cluster"])][0]
+        logger.info('hosts = %s' % hosts)
+        logger.info('Starting filebench')
+        cmd = "setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)"
+        execute_cmd(cmd, hosts)
+        return True, hosts
 
-        logger.info("----Copying file to elmerfs mount point on %s" % host)
-        cmd = "bash %(copy_script_file)s %(file_path)s %(dest_path)s %(log_path)s %(hash)s %(checksum_path)s %(mount_check_path)s" % {
-            "copy_script_file": "/tmp/convergence_files/timing_copy_file.sh",
-            "file_path": "/tmp/convergence_files/sample",
-            "dest_path": "/tmp/dc-$(hostname)/sample",
-            "log_path": "/tmp/results/time_$(hostname)_start",
-            "hash": self.configs['exp_env']['convergence_checksum'],
-            "checksum_path": "/tmp/results/checksum_copy_$(hostname)",
-            "mount_check_path": "/tmp/results/checkelmerfs_$(hostname)",
-        }
-        execute_cmd(cmd, host)
-        self.save_results(comb, host)
+    def install_filebench(self, hosts):
+        configurator = packages_configurator()
+        configurator.install_packages(["build-essential", "bison", "flex", "libtool"], hosts)
 
-    def _convergence(self, src_host, dest_hosts):
-        logger.info("----Start checksum process on destination hosts")
-        cmd = "touch /tmp/dc-$(hostname)/sample"
-        execute_cmd(cmd, src_host)
-        sleep(5)
-        cmd = "bash /tmp/convergence_files/periodically_checksum.sh /tmp/dc-$(hostname)/sample %s /tmp/results/time_$(hostname)_end" % (
-            self.configs['exp_env']['convergence_checksum'])
-        execute_cmd(cmd, dest_hosts, mode='start')
+        cmd = "wget https://github.com/filebench/filebench/archive/refs/tags/1.5-alpha3.tar.gz -P /tmp/ -N"
+        execute_cmd(cmd, hosts)
+        cmd = "tar -xf /tmp/1.5-alpha3.tar.gz --directory /tmp/"
+        execute_cmd(cmd, hosts)
+        cmd = '''cd /tmp/filebench-1.5-alpha3/ &&
+                 libtoolize &&
+                 aclocal &&
+                 autoheader &&
+                 automake --add-missing &&
+                 autoconf &&
+                 ./configure &&
+                 make &&
+                 make install'''
+        execute_cmd(cmd, hosts)
 
-        logger.info("----Copying file to elmerfs mount point on source host")
-        cmd = "bash %(copy_script_file)s %(file_path)s %(dest_path)s %(log_path)s %(hash)s %(checksum_path)s %(mount_check_path)s" % {
-            "copy_script_file": "/tmp/convergence_files/timing_copy_file.sh",
-            "file_path": "/tmp/convergence_files/sample",
-            "dest_path": "/tmp/dc-$(hostname)/sample",
-            "log_path": "/tmp/results/time_$(hostname)_start",
-            "hash": self.configs['exp_env']['convergence_checksum'],
-            "checksum_path": "/tmp/results/checksum_copy_$(hostname)",
-            "mount_check_path": "/tmp/results/checkelmerfs_$(hostname)",
-        }
-        execute_cmd(cmd, src_host)
-
-        logger.info("----Waiting for checksum process on all destination hosts complete")
-        checksum_ok = False
-        for i in range(200):
-            sleep(30)
-            cmd = "ps aux | grep periodically_checksum | grep sample | awk '{print$2}'"
-            _, r = execute_cmd(cmd, dest_hosts)
-            for p in r.processes:
-                if len(p.stdout.strip().split('\n')) > 1:
-                    break
-            else:
-                checksum_ok = True
-                break
-        if not checksum_ok:
-            cmd = "pkill -f periodically_checksum"
-            execute_cmd(cmd, dest_hosts)
-        return True
-
-    def convergence_random(self, comb, antidote_dc):
-        logger.info("----Chose the source host randomly")
-        index = int(comb['iteration']) % len(antidote_dc.keys())
-        cluster_src_name = list(antidote_dc.keys())[index]
-        cluster_src = antidote_dc[cluster_src_name]
-
-        index = int(comb['iteration']) % len(cluster_src['host_names'])
-        src_host = cluster_src['host_names'][index]
-
-        dest_hosts = list()
-        for cluster_name, cluster_info in antidote_dc.items():
-            dest_hosts += cluster_info['host_names']
-        dest_hosts.remove(src_host)
-        logger.info("src_host = %s" % src_host)
-        logger.info("dest_hosts = %s" % dest_hosts)
-
-        return self._convergence(src_host, dest_hosts)
-
-    def convergence_fix(self, comb, antidote_dc):
-        logger.info("----Chose the source host randomly")
-        cluster_src_name = self.configs["exp_env"]["kube_master_site"]
-        cluster_src = antidote_dc[cluster_src_name]
-
-        src_host = cluster_src['host_names'][0]
-
-        dest_hosts = list()
-        for cluster_name, cluster_info in antidote_dc.items():
-            dest_hosts += cluster_info['host_names']
-        dest_hosts.remove(src_host)
-        logger.info("src_host = %s" % src_host)
-        logger.info("dest_hosts = %s" % dest_hosts)
-
-        return self._convergence(src_host, dest_hosts)
-
-    def convergence_min(self, comb, antidote_dc):
-        logger.info("----Chose the source host in the smallest cluster")
-        list_hosts = list()
-        for cluster_name, cluster_info in antidote_dc.items():
-            list_hosts += cluster_info['host_names']
-
-        # choose the cluster which have the smallest number of Antidote instances
-        cluster = min(self.configs["exp_env"]["antidote_clusters"],
-                      key=lambda x: x["n_antidotedb_per_dc"])
-        # pick 1 host in the chosen cluster
-        src_host = [host for host in list_hosts if host.startswith(cluster["cluster"])][0]
-
-        dest_hosts = list_hosts
-        dest_hosts.remove(src_host)
-
-        logger.info("src_host = %s" % src_host)
-        logger.info("dest_hosts = %s" % dest_hosts)
-
-        return self._convergence(src_host, dest_hosts)
-
-    def performance(self, comb, elmerfs_hosts, antidote_dc):
-        logger.info("Killing performance benchmark process if it is running")
-        cmd = "pkill -f elmerfs_run"
-        execute_cmd(cmd, self.hosts)
-
-        hosts = list()
-        for cluster_name, cluster_info in antidote_dc.items():
-            hosts += cluster_info["host_names"][0:comb["n_nodes_run_per_dc"]]
-        logger.info("----> List of hosts to run benchmark: %s" % hosts)
-        logger.info("----> Setup the env for performance benchmark on %s" % hosts[0])
-        cmd = "bash /tmp/performance_files/elmerfs_setup.sh /tmp/dc-$(hostname)"
-        execute_cmd(cmd, hosts[0])
-
-        logger.info("----> waiting for synchronizing")
-        sleep(60)
-
-        logger.info("----> Run the benchmark")
-        # check elmerfs_run.sh is running on all hosts
-        re_run_hosts = hosts
-        for i in range(10):
-            bench_ok = True
-            if len(re_run_hosts) > 0:
-                cmd = "bash /tmp/performance_files/elmerfs_run.sh /tmp/dc-$(hostname) /tmp/results %s $ELMERFS_UID" % len(
-                    hosts)
-                execute_cmd(cmd, re_run_hosts, mode="start")
-            else:
-                break
-
-            sleep(5)
-
-            re_run_hosts = list()
-            cmd = "ps a | grep elmerfs_run"
-            for host in hosts:
-                _, r = execute_cmd(cmd, host)
-                if len(r.processes[0].stdout.strip().split('\n')) <= 2:
-                    re_run_hosts.append(host)
-
-        if len(re_run_hosts) > 0:
-            logger.info("Cannot start benchmark on all hosts: %s" % re_run_hosts)
-            return False
-        logger.info("----> Start the benchmark successfully")
-
-        # check all hosts are ready for benchmark
-        is_ready = False
-        for i in range(120):
-            sleep(5)
-            cmd = "ls /tmp/ | grep ready | wc -l"
-            for host in hosts:
-                _, r = execute_cmd(cmd, host)
-                if int(r.processes[0].stdout.strip()) == 0:
-                    break
-            else:
-                is_ready = True
-                break
-        if not is_ready:
-            logger.info("Waiting for readiness... Timeout!")
-            return False
-        logger.info("----> Waiting for readiness... OK!!!")
-
-        # timeout of benchmark
-        logger.info("----> waiting for benchmark to finish")
-        is_finished = False
-        for i in range(360):
-            bench_ok = True
-            sleep(10)
-            cmd = "wc -l /tmp/results/$(hostname)_bench.txt"
-            for host in hosts:
-                _, r = execute_cmd(cmd, host)
-                n_line = r.processes[0].stdout.split(' ')[0].strip()
-                if not n_line.isdigit() or int(n_line) < 4:
-                    bench_ok = False
-                    break
-
-            if bench_ok:
-                is_finished = True
-                break
-        self.save_results(comb, hosts)
-        return is_finished
-
-    def contentions(self, elmerfs_hosts):
-        pass
-
-    def run_benchmark(self, comb, elmerfs_hosts, antidote_dc, kube_master):
+    def run_benchmark(self, comb, elmerfs_hosts):
         benchmarks = comb['benchmarks']
-        logger.info("--Running benchmark %s" % benchmarks)
-        if benchmarks == "convergence_random":
-            return self.convergence_random(comb, antidote_dc)
-        if benchmarks == "convergence_fix":
-            return self.convergence_fix(comb, antidote_dc)
-        if benchmarks == "convergence_min":
-            return self.convergence_min(comb, antidote_dc)
-        if benchmarks == "performance":
-            return self.performance(comb, elmerfs_hosts, antidote_dc)
-        if benchmarks == "contentions":
-            return self.contentions(elmerfs_hosts, antidote_dc)
-        if benchmarks == "copy_time":
-            return self.copy_time(comb, kube_master)
+        logger.info("-----------------------------------")
+        logger.info("4. Running benchmark %s" % benchmarks)
+
+        if benchmarks == "mailserver":
+            is_finished, hosts = self.run_mailserver(elmerfs_hosts, comb['duration'], comb['n_client'])
+            return is_finished, hosts
 
     def save_results(self, comb, hosts):
-        logger.info("--Starting dowloading the results")
+        logger.info("----------------------------------")
+        logger.info("5. Starting downloading the results")
 
         get_results(comb=comb,
                     hosts=hosts,
                     remote_result_files=['/tmp/results/*'],
                     local_result_dir=self.configs['exp_env']['results_dir'])
 
-    def run_workflow(self, elmerfs_hosts, kube_namespace, kube_master, comb, sweeper):
+    def run_workflow(self, kube_namespace, kube_master, comb, sweeper):
+
         comb_ok = False
 
         try:
             logger.info("=======================================")
             logger.info("Performing combination: " + slugify(comb))
-            antidote_dc = self.config_antidote(kube_namespace)
-            # antidote_dc = {'econome':
-            #                         {'pod_ips': ['10.244.4.36', '10.244.6.42', '10.244.3.43'],
-            #                          'host_names': ['econome-8.nantes.grid5000.fr', 'econome-6.nantes.grid5000.fr', 'econome-9.nantes.grid5000.fr'],
-            #                          'pod_names': ['antidote-econome-0', 'antidote-econome-1', 'antidote-econome-2']},
-            #                'parasilo':
-            #                         {'pod_ips': ['10.244.5.33', '10.244.2.51', '10.244.1.38'],
-            #                          'host_names': ['parasilo-6.rennes.grid5000.fr', 'parasilo-7.rennes.grid5000.fr', 'parasilo-5.rennes.grid5000.fr'],
-            #                          'pod_names': ['antidote-parasilo-0', 'antidote-parasilo-1', 'antidote-parasilo-2']}
-            #                 }
+            self.clean_exp_env(kube_namespace)
+            self.deploy_antidote(kube_namespace, comb)
 
-            logger.info("antidote_dc = %s" % antidote_dc)
+            logger.debug("Getting hosts and IP of antidoteDB instances on their nodes")
+            antidote_ips = dict()
+            configurator = k8s_resources_configurator()
+            pod_list = configurator.get_k8s_resources(resource="pod",
+                                                      label_selectors="app=antidote",
+                                                      kube_namespace=kube_namespace,)
+            for pod in pod_list.items:
+                node = pod.spec.node_name
+                if node not in antidote_ips:
+                    antidote_ips[node] = list()
+                antidote_ips[node].append(pod.status.pod_ip)
 
-            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts)
+            antidote_hosts = list(antidote_ips.keys())
+            elmerfs_hosts = antidote_hosts
+
+            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts, antidote_ips)
             if is_elmerfs:
 
                 if self.args.monitoring:
                     self.deploy_monitoring(kube_master, kube_namespace)
-
-                self.clean_exp_env(elmerfs_hosts)
-
-                if comb["latency"] != 0:
-                    self.set_latency(comb["latency"], antidote_dc)
-
-                is_finished = self.run_benchmark(comb, elmerfs_hosts, antidote_dc, kube_master)
-
-                if comb["latency"] != 0:
-                    self.reset_latency(antidote_dc)
+                is_finished, hosts = self.run_benchmark(comb, elmerfs_hosts)
 
                 if is_finished:
                     comb_ok = True
-                    if comb["benchmarks"] not in ["copy_time", "performance"]:
-                        self.save_results(comb, elmerfs_hosts)
+                    self.save_results(comb, hosts)
             else:
-                comb_ok = False
-        except ExecuteCommandException as e:
+                raise CancelCombException("Cannot deploy elmerfs")
+        except (ExecuteCommandException, CancelCombException) as e:
+            logger.error('Combination exception: %s' % e)
             comb_ok = False
         finally:
             if comb_ok:
@@ -422,63 +252,15 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             logger.info("%s combinations remaining\n" % len(sweeper.get_remaining()))
         return sweeper
 
-    def install_benchsoftware(self, hosts):
-        logger.info("Starting installing benchmark software")
+    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, antidote_ips):
+        logger.info("-----------------------------------------")
+        logger.info("3. Starting deploying elmerfs on %s hosts" % len(elmerfs_hosts))
 
-        logger.info("Installing tccommand")
-        cmd = "curl -sSL https://raw.githubusercontent.com/thombashi/tcconfig/master/scripts/installer.sh | bash"
-        execute_cmd(cmd, hosts)
-
-        configurator = packages_configurator()
-        configurator.install_packages(["bonnie++", "libfuse2", "wget", "jq"], hosts)
-
-        logger.info("Installing crefi")
-        cmd = "pip install pyxattr"
-        execute_cmd(cmd, hosts)
-        cmd = "pip install crefi"
-        execute_cmd(cmd, hosts)
-
-        # create folder to store the results on all hosts
-        cmd = "mkdir -p /tmp/results"
-        execute_cmd(cmd, hosts)
-
-        # prepare data on all host for convergence experiment
-        cmd = "mkdir -p /tmp/convergence_files"
-        execute_cmd(cmd, hosts)
-        cmd = "wget https://raw.githubusercontent.com/ntlinh16/elmerfs-eval/main/resources_convergence_exp/timing_copy_file.sh -P /tmp/convergence_files/ -N"
-        execute_cmd(cmd, hosts)
-        cmd = "wget https://raw.githubusercontent.com/ntlinh16/elmerfs-eval/main/resources_convergence_exp/periodically_checksum.sh -P /tmp/convergence_files/ -N"
-        execute_cmd(cmd, hosts)
-        test_file = self.configs['exp_env']['convergence_test_file']
-        cmd = "wget %s -P /tmp/convergence_files/ -N" % test_file
-        execute_cmd(cmd, hosts)
-        cmd = "mv /tmp/convergence_files/%s /tmp/convergence_files/sample" % (
-            test_file.split('/')[-1])
-        execute_cmd(cmd, hosts)
-
-        # prepare data on all host for performance experiment
-        cmd = "mkdir -p /tmp/performance_files"
-        execute_cmd(cmd, hosts)
-        cmd = "wget https://raw.githubusercontent.com/ntlinh16/elmerfs-eval/main/resources_performance_exp/elmerfs_setup.sh -P /tmp/performance_files/ -N"
-        execute_cmd(cmd, hosts)
-        cmd = "wget https://raw.githubusercontent.com/ntlinh16/elmerfs-eval/main/resources_performance_exp/elmerfs_run.sh -P /tmp/performance_files/ -N"
-        execute_cmd(cmd, hosts)
-        cmd = "chmod +x /tmp/performance_files/*"
-        execute_cmd(cmd, hosts)
-
-        # create random UID and set it as ELMERFS_UID env variable on each hot for running elmerfs
-        uids = random.sample(range(10**4, 10**6), len(self.hosts))
-        for host, uid in zip(hosts, uids):
-            cmd = 'echo "export ELMERFS_UID=%s" >> ~/.bashrc' % uid
-            execute_cmd(cmd, host)
-
-        logger.info("Finish installing benchmark software on hosts\n")
-
-    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts):
-        logger.info("Starting deploying elmerfs on hosts")
-
-        configurator = packages_configurator()
-        # configurator.install_packages(["libfuse2", "wget", "jq"], elmerfs_hosts)
+        logger.debug('Delete all files in /tmp/results folder on elmerfs nodes from the previous run')
+        cmd = 'rm -rf /tmp/results && mkdir -p /tmp/results'
+        execute_cmd(cmd, elmerfs_hosts)
+        cmd = 'rm -rf /tmp/elmerfs'
+        execute_cmd(cmd, elmerfs_hosts)
 
         elmerfs_repo = self.configs["exp_env"]["elmerfs_repo"]
         elmerfs_version = self.configs["exp_env"]["elmerfs_version"]
@@ -490,6 +272,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             elmerfs_version = "latest"
 
         logger.info("Killing elmerfs process if it is running")
+        logger.info('elmerfs_hosts: %s' % elmerfs_hosts)
         for host in elmerfs_hosts:
             cmd = "pidof elmerfs"
             _, r = execute_cmd(cmd, host)
@@ -498,10 +281,17 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             if len(pids) >= 1 and pids[0] != '':
                 for pid in pids:
                     cmd = "kill %s" % pid.strip()
+                    execute_cmd(cmd, host)
+                sleep(5)
+
+            cmd = "mount | grep /tmp/dc-$(hostname)"
+            _, r = execute_cmd(cmd, host)
+            is_mount = r.processes[0].stdout.strip()
+
+            if is_mount:
                 execute_cmd(cmd, host)
-                cmd = "umount /tmp/dc-$(hostname)"
-                execute_cmd(cmd, host)
-                cmd = "rm -rf /tmp/dc-$(hostname)"
+                cmd = '''umount /tmp/dc-$(hostname) &&
+                         rm -rf /tmp/dc-$(hostname) '''
                 execute_cmd(cmd, host)
 
         logger.info("Delete elmerfs project folder on host (if existing)")
@@ -558,82 +348,117 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                && mkdir -p /tmp/dc-$(hostname)"
         execute_cmd(cmd, elmerfs_hosts)
 
-        logger.debug("Getting IP of antidoteDB instances on nodes")
-        antidote_ips = dict()
-        configurator = k8s_resources_configurator()
-        pod_list = configurator.get_k8s_resources(resource="pod",
-                                                  label_selectors="app=antidote",
-                                                  kube_namespace=kube_namespace,)
-        for pod in pod_list.items:
-            node = pod.spec.node_name
-            if node not in antidote_ips:
-                antidote_ips[node] = list()
-            antidote_ips[node].append(pod.status.pod_ip)
+        cmd = 'wget https://raw.githubusercontent.com/scality/elmerfs/master/Elmerfs.template.toml -P /tmp/ -N'
+        execute_cmd(cmd, elmerfs_hosts)
 
+        elmerfs_cluster_id = set(range(0, len(self.configs['exp_env']['clusters'])))
+        elmerfs_node_id = set(range(0, len(elmerfs_hosts)))
+        elmerfs_uid = set(range(len(elmerfs_hosts), len(elmerfs_hosts)*2))
+
+        logger.info('Editing the elmerfs configuration file on %s hosts' % len(elmerfs_hosts))
+        for cluster in self.configs['exp_env']['clusters']:
+            configurator = k8s_resources_configurator()
+            host_list = configurator.get_k8s_resources(resource="node",
+                                                       label_selectors="cluster_g5k=%s" % cluster,
+                                                       kube_namespace=kube_namespace)
+            hosts = [host.metadata.name for host in host_list.items]
+            cluster_id = elmerfs_cluster_id.pop()
+            for host in hosts:
+                if host in antidote_ips:
+                    logger.debug('Editing the configuration file on host %s' % host)
+                    logger.debug('elmerfs_node_id = %s, elmerfs_cluster_id = %s' %
+                                 (elmerfs_node_id, elmerfs_cluster_id))
+                    ips = " ".join([ip for ip in antidote_ips[host]])
+                    cmd = '''sed -i 's/127.0.0.1:8101/%s:8087/g' /tmp/Elmerfs.template.toml ;
+                            sed -i 's/node_id = 0/node_id = %s/g' /tmp/Elmerfs.template.toml ;
+                            sed -i 's/cluster_id = 0/cluster_id = %s/g' /tmp/Elmerfs.template.toml
+                        ''' % (ips, elmerfs_node_id.pop(), cluster_id)
+                    execute_cmd(cmd, host)
+
+        logger.info('Running bootstrap command on host %s' % elmerfs_hosts[0])
+        cmd = '/tmp/elmerfs --config /tmp/Elmerfs.template.toml --bootstrap --mount /tmp/dc-$(hostname)'
+        execute_cmd(cmd, elmerfs_hosts[0])
+        # waiting for the bootstrap common to propagate on all DCs
+        sleep(30)
+
+        logger.info("Starting elmerfs on %s hosts" % len(elmerfs_hosts))
         for host in elmerfs_hosts:
-            antidote_options = ["--antidote=%s:8087" % ip for ip in antidote_ips[host]]
-
-            elmerfs_cmd = "RUST_BACKTRACE=1 RUST_LOG=debug nohup /tmp/elmerfs %s --mount=/tmp/dc-$(hostname) --force-view=$ELMERFS_UID > /tmp/elmer.log 2>&1" % " ".join(
-                antidote_options)
-            logger.info("Starting elmerfs on %s with cmd: %s" % (host, elmerfs_cmd))
+            elmerfs_cmd = "RUST_BACKTRACE=1 RUST_LOG=debug nohup /tmp/elmerfs --config /tmp/Elmerfs.template.toml --mount=/tmp/dc-$(hostname) --force-view=%s > /tmp/elmer.log 2>&1" % elmerfs_uid.pop(
+            )
+            logger.debug("Starting elmerfs on %s with cmd: %s" % (host, elmerfs_cmd))
             execute_cmd(elmerfs_cmd, host, mode='start')
-            sleep(10)
+            sleep(5)
 
+            logger.info('Checking if elmerfs is running on host %s' % host)
             for i in range(10):
                 cmd = "pidof elmerfs"
                 _, r = execute_cmd(cmd, host)
                 pid = r.processes[0].stdout.strip().split(" ")
 
                 if len(pid) >= 1 and pid[0].strip():
+                    logger.info('elmerfs starts successfully')
                     break
                 else:
+                    logger.info('---> Retrying: starting elmerfs again')
                     execute_cmd(elmerfs_cmd, host, mode="start")
-                    sleep(10)
+                    sleep(5)
             else:
                 logger.info("Cannot deploy elmerfs on host %s" % host)
                 return False
 
-        logger.info("Finish deploying elmerfs\n")
+        logger.info("Finish deploying elmerfs")
         return True
 
-    def config_antidote(self, kube_namespace):
-        logger.info("Starting deploying Antidote cluster")
-        antidote_k8s_dir = self.configs["exp_env"]["antidote_yaml_path"]
+    def _calculate_ring_size(self, n_nodes):
+        # calculate the ring size base on the number of nodes in a DC
+        # this setting follows the recomandation of Riak KV here:
+        # https://docs.riak.com/riak/kv/latest/setup/planning/cluster-capacity/index.html#ring-size-number-of-partitions
+        if n_nodes < 7:
+            return 64
+        elif n_nodes < 10:
+            return 128
+        elif n_nodes < 14:
+            return 256
+        elif n_nodes < 20:
+            return 512
+        elif n_nodes < 40:
+            return 1024
+        return 2048
 
-        logger.info("Deleting all k8s resource in namespace %s" % kube_namespace)
-        configurator = k8s_resources_configurator()
-        configurator.delete_namespace(kube_namespace)
-        configurator.create_namespace(kube_namespace)
+    def deploy_antidote(self, kube_namespace, comb):
+        logger.info('--------------------------------------')
+        logger.info('2. Starting deploying Antidote cluster')
+        antidote_k8s_dir = self.configs['exp_env']['antidote_yaml_path']
 
-        logger.debug("Delete old createDC, connectDCs_antidote and exposer-service files if exists")
+        logger.debug('Delete old createDC, connectDCs_antidote and exposer-service files if exists')
         for filename in os.listdir(antidote_k8s_dir):
-            if (
-                filename.startswith("createDC_")
-                or filename.startswith("statefulSet_")
-                or filename.startswith("exposer-service_")
-                or filename.startswith("connectDCs_antidote")
-            ):
-                if ".template" not in filename:
+            if filename.startswith('createDC_') or filename.startswith('statefulSet_') or filename.startswith('exposer-service_') or filename.startswith('connectDCs_antidote'):
+                if '.template' not in filename:
                     try:
                         os.remove(os.path.join(antidote_k8s_dir, filename))
                     except OSError:
                         logger.debug("Error while deleting file")
 
-        logger.debug("Modify the statefulSet file")
-        file_path = os.path.join(antidote_k8s_dir, "statefulSet.yaml.template")
+        statefulSet_files = [os.path.join(antidote_k8s_dir, 'headlessService.yaml')]
+        logger.debug('Modify the statefulSet file')
+
+        file_path = os.path.join(antidote_k8s_dir, 'statefulSet.yaml.template')
+
+        ring_size = self._calculate_ring_size(comb['n_nodes_per_dc'])
         with open(file_path) as f:
             doc = yaml.safe_load(f)
-        statefulSet_files = [os.path.join(antidote_k8s_dir, "headlessService.yaml")]
-        for cluster in self.configs["exp_env"]["antidote_clusters"]:
-            cluster_name = cluster["cluster"]
-            doc["spec"]["replicas"] = cluster["n_antidotedb_per_dc"]
-            doc["metadata"]["name"] = "antidote-%s" % cluster_name
-            doc["spec"]["template"]["spec"]["nodeSelector"] = {
-                "service_g5k": "antidote",
-                "cluster_g5k": "%s" % cluster_name,
-            }
-            file_path = os.path.join(antidote_k8s_dir, "statefulSet_%s.yaml" % cluster_name)
-            with open(file_path, "w") as f:
+        for cluster in self.configs['exp_env']['clusters']:
+            doc['spec']['replicas'] = comb['n_nodes_per_dc']
+            doc['metadata']['name'] = 'antidote-%s' % cluster.lower()
+            doc['spec']['template']['spec']['nodeSelector'] = {
+                'service_g5k': 'antidote', 'cluster_g5k': '%s' % cluster}
+            envs = doc['spec']['template']['spec']['containers'][0]['env']
+            for env in envs:
+                if env.get('name') == "RING_SIZE":
+                    env['value'] = str(ring_size)
+                    break
+            file_path = os.path.join(antidote_k8s_dir, 'statefulSet_%s.yaml' % cluster.lower())
+            with open(file_path, 'w') as f:
                 yaml.safe_dump(doc, f)
             statefulSet_files.append(file_path)
 
@@ -642,86 +467,92 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         configurator = k8s_resources_configurator()
         configurator.deploy_k8s_resources(files=statefulSet_files, namespace=kube_namespace)
 
-        logger.info("Waiting until all Antidote instances are up")
-        configurator.wait_k8s_resources(resource="pod",
-                                        label_selectors="app=antidote",
-                                        kube_namespace=kube_namespace,)
+        logger.info('Waiting until all Antidote instances are up')
+        deploy_ok = configurator.wait_k8s_resources(resource='pod',
+                                                    label_selectors="app=antidote",
+                                                    timeout=600,
+                                                    kube_namespace=kube_namespace)
+        if not deploy_ok:
+            raise CancelCombException("Cannot deploy enough Antidotedb instances")
 
-        logger.debug("Creating createDc.yaml file for each Antidote DC")
-        antidote_dc = dict()
-        for cluster in self.configs["exp_env"]["antidote_clusters"]:
-            cluster_name = cluster["cluster"]
-            antidote_dc[cluster_name] = dict()
-            antidote_dc[cluster_name]['host_names'] = list()
-            antidote_dc[cluster_name]['pod_names'] = list()
-            antidote_dc[cluster_name]['pod_ips'] = list()
+        logger.debug('Creating createDc.yaml file for each Antidote DC')
+        dcs = dict()
+        for cluster in self.configs['exp_env']['clusters']:
+            dcs[cluster.lower()] = list()
+        antidote_list = configurator.get_k8s_resources_name(resource='pod',
+                                                            label_selectors='app=antidote',
+                                                            kube_namespace=kube_namespace)
+        logger.info("Checking if AntidoteDB are deployed correctly")
+        if len(antidote_list) != comb['n_nodes_per_dc']*len(self.configs['exp_env']['clusters']):
+            logger.info("n_antidotedb = %s, n_deployed_antidotedb = %s" %
+                        (comb['n_nodes_per_dc']*len(self.configs['exp_env']['clusters']), len(antidote_list)))
+            raise CancelCombException("Cannot deploy enough Antidotedb instances")
 
-        antidote_pods = configurator.get_k8s_resources(resource="pod",
-                                                       label_selectors="app=antidote",
-                                                       kube_namespace=kube_namespace,)
-        for pod in antidote_pods.items:
-            cluster = pod.spec.node_name.split("-")[0].strip()
-            if pod.spec.node_name not in antidote_dc[cluster]['host_names']:
-                antidote_dc[cluster]['host_names'].append(pod.spec.node_name)
-            antidote_dc[cluster]['pod_names'].append(pod.metadata.name)
-            antidote_dc[cluster]['pod_ips'].append(pod.status.pod_ip)
+        for antidote in antidote_list:
+            cluster = antidote.split('-')[1].strip()
+            dcs[cluster].append(antidote)
 
-        file_path = os.path.join(antidote_k8s_dir, "createDC.yaml.template")
+        file_path = os.path.join(antidote_k8s_dir, 'createDC.yaml.template')
         with open(file_path) as f:
             doc = yaml.safe_load(f)
 
         antidote_masters = list()
         createdc_files = list()
-        for cluster, cluster_info in antidote_dc.items():
-            doc["spec"]["template"]["spec"]["containers"][0]["args"] = [
-                "--createDc", "%s.antidote:8087" % cluster_info['pod_names'][0]
-            ] + ["antidote@%s.antidote" % pod for pod in cluster_info['pod_names']]
-            doc["metadata"]["name"] = "createdc-%s" % cluster
-            antidote_masters.append("%s.antidote:8087" % cluster_info['pod_names'][0])
-            file_path = os.path.join(antidote_k8s_dir, "createDC_%s.yaml" % cluster)
-            with open(file_path, "w") as f:
+        for cluster, pods in dcs.items():
+            doc['spec']['template']['spec']['containers'][0]['args'] = ['--createDc',
+                                                                        '%s.antidote:8087' % pods[0]] + ['antidote@%s.antidote' % pod for pod in pods]
+            doc['metadata']['name'] = 'createdc-%s' % cluster.lower()
+            antidote_masters.append('%s.antidote:8087' % pods[0])
+            file_path = os.path.join(antidote_k8s_dir, 'createDC_%s.yaml' % cluster.lower())
+            with open(file_path, 'w') as f:
                 yaml.safe_dump(doc, f)
             createdc_files.append(file_path)
 
-        logger.debug("Creating exposer-service.yaml files")
-        file_path = os.path.join(antidote_k8s_dir, "exposer-service.yaml.template")
+        logger.debug('Creating exposer-service.yaml files')
+        file_path = os.path.join(antidote_k8s_dir, 'exposer-service.yaml.template')
         with open(file_path) as f:
             doc = yaml.safe_load(f)
-        for cluster, cluster_info in antidote_dc.items():
-            doc["spec"]["selector"]["statefulset.kubernetes.io/pod-name"] = cluster_info['pod_names'][0]
-            doc["metadata"]["name"] = "antidote-exposer-%s" % cluster
-            file_path = os.path.join(antidote_k8s_dir, "exposer-service_%s.yaml" % cluster)
-            with open(file_path, "w") as f:
+        for cluster, pods in dcs.items():
+            doc['spec']['selector']['statefulset.kubernetes.io/pod-name'] = pods[0]
+            doc['metadata']['name'] = 'antidote-exposer-%s' % cluster.lower()
+            file_path = os.path.join(antidote_k8s_dir, 'exposer-service_%s.yaml' % cluster.lower())
+            with open(file_path, 'w') as f:
                 yaml.safe_dump(doc, f)
-                createdc_files.append(file_path)
+            createdc_files.append(file_path)
 
         logger.info("Creating Antidote DCs and exposing services")
         configurator.deploy_k8s_resources(files=createdc_files, namespace=kube_namespace)
 
-        logger.info("Waiting until all antidote DCs are created")
-        configurator.wait_k8s_resources(resource="job",
-                                        label_selectors="app=antidote",
-                                        kube_namespace=kube_namespace,)
+        logger.info('Waiting until all antidote DCs are created')
+        deploy_ok = configurator.wait_k8s_resources(resource='job',
+                                                    label_selectors='app=antidote',
+                                                    kube_namespace=kube_namespace)
 
-        logger.debug("Creating connectDCs_antidote.yaml to connect all Antidote DCs")
-        file_path = os.path.join(antidote_k8s_dir, "connectDCs.yaml.template")
+        if not deploy_ok:
+            raise CancelCombException("Cannot connect Antidotedb instances to create DC")
+
+        logger.debug('Creating connectDCs_antidote.yaml to connect all Antidote DCs')
+        file_path = os.path.join(antidote_k8s_dir, 'connectDCs.yaml.template')
         with open(file_path) as f:
             doc = yaml.safe_load(f)
-        doc["spec"]["template"]["spec"]["containers"][0]["args"] = [
-            "--connectDcs"] + antidote_masters
-        file_path = os.path.join(antidote_k8s_dir, "connectDCs_antidote.yaml")
-        with open(file_path, "w") as f:
+        doc['spec']['template']['spec']['containers'][0]['args'] = [
+            '--connectDcs'] + antidote_masters
+        file_path = os.path.join(antidote_k8s_dir, 'connectDCs_antidote.yaml')
+        with open(file_path, 'w') as f:
             yaml.safe_dump(doc, f)
 
         logger.info("Connecting all Antidote DCs into a cluster")
         configurator.deploy_k8s_resources(files=[file_path], namespace=kube_namespace)
 
-        logger.info("Waiting until connecting all Antidote DCs")
-        configurator.wait_k8s_resources(resource="job",
-                                        label_selectors="app=antidote",
-                                        kube_namespace=kube_namespace,)
-        logger.info("Finish deploying the Antidote cluster\n")
-        return antidote_dc
+        logger.info('Waiting until connecting all Antidote DCs')
+        deploy_ok = configurator.wait_k8s_resources(resource='job',
+                                                    label_selectors='app=antidote',
+                                                    kube_namespace=kube_namespace)
+        if not deploy_ok:
+            raise CancelCombException("Cannot connect all Antidotedb DCs")
+
+        logger.info('Finish deploying the Antidote cluster')
+        return 1
 
     def _set_kube_workers_label(self, kube_workers):
         logger.info("Set labels for all kubernetes workers")
@@ -792,44 +623,50 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         self._set_kube_workers_label(kube_workers)
 
         logger.info("Finish configuring the Kubernetes cluster\n")
+        return kube_workers
 
     def config_host(self, kube_master_site, kube_namespace):
         kube_master = self.args.kube_master
 
         if self.args.kube_master is None:
             antidote_hosts = list()
-            for cluster in self.configs["exp_env"]["antidote_clusters"]:
+            for cluster in self.configs['clusters']:
                 cluster_name = cluster["cluster"]
                 if cluster_name == self.configs["exp_env"]["kube_master_site"]:
                     antidote_hosts += [
                         host for host in self.hosts if host.startswith(cluster_name)
-                    ][0: cluster["n_antidotedb_per_dc"] + 1]
+                    ][0: cluster["n_nodes"] + 1]
                 else:
                     antidote_hosts += [
                         host for host in self.hosts if host.startswith(cluster_name)
-                    ][0: cluster["n_antidotedb_per_dc"]]
+                    ][0: cluster["n_nodes"]]
 
             for host in antidote_hosts:
                 if host.startswith(kube_master_site):
                     kube_master = host
                     break
-            elmerfs_hosts = antidote_hosts
-            elmerfs_hosts.remove(kube_master)
 
-            self.config_kube(kube_master, antidote_hosts, kube_namespace)
+            kube_workers = self.config_kube(kube_master, antidote_hosts, kube_namespace)
         else:
             logger.info("Kubernetes master: %s" % kube_master)
             self._get_credential(kube_master)
 
             configurator = k8s_resources_configurator()
-            antidote_hosts = configurator.get_k8s_resources_name(resource="node",
-                                                                 label_selectors="service_g5k=antidote")
+            deployed_hosts = configurator.get_k8s_resources(resource="node")
+            kube_workers = [host.metadata.name for host in deployed_hosts.items]
+            kube_workers.remove(kube_master)
 
-            elmerfs_hosts = antidote_hosts
+        logger.info('Installing elmerfs dependencies')
+        configurator = packages_configurator()
+        configurator.install_packages(["libfuse2", "wget", "jq"], kube_workers)
+        # Create mount point on elmerfs hosts
+        cmd = "mkdir -p /tmp/dc-$(hostname)"
+        execute_cmd(cmd, kube_workers)
 
-        self.install_benchsoftware(elmerfs_hosts)
-
-        return elmerfs_hosts
+        # Installing filebench for running the experiments
+        if self.configs['parameters']['benchmarks'] in ['mailserver', 'videoserver']:
+            logger.info('Installing Filebench')
+            self.install_filebench(kube_workers)
 
     def setup_env(self, kube_master_site, kube_namespace):
         logger.info("Starting configuring the experiment environment")
@@ -855,82 +692,69 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                     kube_master = host
                     break
 
-        elmerfs_hosts = self.config_host(kube_master, kube_namespace)
+        self.config_host(kube_master, kube_namespace)
 
         logger.info("Finish configuring nodes\n")
 
         self.args.oar_job_ids = None
         logger.info("Finish configuring the experiment environment\n")
-        return oar_job_ids, kube_master, elmerfs_hosts
+        return oar_job_ids, kube_master
 
     def create_configs(self):
         logger.debug("Get the k8s master node")
         kube_master_site = self.configs["exp_env"]["kube_master_site"]
-        cluster_names = [cluster["cluster"]
-                         for cluster in self.configs["exp_env"]["antidote_clusters"]]
-        if (
-            kube_master_site is None
-            or kube_master_site not in cluster_names
-        ):
-            kube_master_site = cluster_names[0]
+        if kube_master_site is None or kube_master_site not in self.configs['exp_env']['clusters']:
+            kube_master_site = self.configs['exp_env']['clusters'][0]
 
-        # calculating the total number of hosts for each cluster
-        clusters = dict()
-        for cluster in self.configs["exp_env"]["antidote_clusters"]:
-            cluster_name = cluster["cluster"]
-            if cluster_name == kube_master_site:
-                clusters[cluster_name] = (
-                    clusters.get(cluster_name, 0)
-                    + cluster["n_antidotedb_per_dc"]
-                    + 1
-                )
+        n_nodes_per_cluster = max(self.normalized_parameters['n_nodes_per_dc'])
+
+        # create standard cluster information to make reservation on Grid'5000, this info using by G5k provisioner
+        clusters = list()
+        for cluster in self.configs['exp_env']['clusters']:
+            if cluster == kube_master_site:
+                clusters.append({'cluster': cluster, 'n_nodes': n_nodes_per_cluster + 1})
             else:
-                clusters[cluster_name] = (
-                    clusters.get(cluster_name, 0)
-                    + cluster["n_antidotedb_per_dc"]
-                )
+                clusters.append({'cluster': cluster, 'n_nodes': n_nodes_per_cluster})
+        self.configs['clusters'] = clusters
 
-        self.configs["clusters"] = [
-            {"cluster": cluster, "n_nodes": n_nodes}
-            for cluster, n_nodes in clusters.items()
-        ]
-
+        # copy all YAML template folders to a new one for this experiment run to avoid conflicting
         results_dir_name = (self.configs["exp_env"]["results_dir"]).split('/')[-1]
-        antidote_yaml_path = self.configs["exp_env"]["antidote_yaml_path"]
-        new_antidote_yaml_path = antidote_yaml_path + "_" + results_dir_name
-        if os.path.exists(new_antidote_yaml_path):
-            shutil.rmtree(new_antidote_yaml_path)
-        shutil.copytree(antidote_yaml_path, new_antidote_yaml_path)
+        results_dir_path = os.path.dirname(self.configs["exp_env"]["results_dir"])
 
-        self.configs["exp_env"]["antidote_yaml_path"] = new_antidote_yaml_path
+        yaml_dir_path = os.path.dirname(self.configs["exp_env"]["antidote_yaml_path"])
+        yaml_dir_name = yaml_dir_path.split('/')[-1]
+
+        new_yaml_dir_name = yaml_dir_name + "_" + results_dir_name
+        new_path = results_dir_path + "/" + new_yaml_dir_name
+        if os.path.exists(new_path):
+            shutil.rmtree(new_path)
+        shutil.copytree(yaml_dir_path, new_path)
+
+        self.configs["exp_env"]["antidote_yaml_path"] = new_path + "/antidotedb_yaml"
+        self.configs["exp_env"]["monitoring_yaml_path"] = new_path + "/monitoring_yaml"
 
         return kube_master_site
 
     def run(self):
         logger.debug("Parse and convert configs for G5K provisioner")
         self.configs = parse_config_file(self.args.config_file_path)
+
+        # Add the number of Antidote DC as a parameter
+        self.configs['parameters']['n_dc'] = len(self.configs['exp_env']['clusters'])
+
+        logger.debug('Normalize the parameter space')
+        self.normalized_parameters = define_parameters(self.configs['parameters'])
+
+        logger.debug('Normalize the given configs')
         kube_master_site = self.create_configs()
 
-        logger.info(
-            """Your topology:  %s"""
-            % self.configs["exp_env"]["antidote_clusters"]
+        logger.info('''Your largest topology:
+                        Antidote DCs: %s
+                        n_antidotedb_per_DC: %s  ''' % (
+            len(self.configs['exp_env']['clusters']),
+            max(self.normalized_parameters['n_nodes_per_dc'])
         )
-
-        # Logarithmic scale interval of latency
-        if self.configs["parameters"]["latency_interval"] == "logarithmic scale":
-            start, end = self.configs["parameters"]["latency"]
-            latency = [start, end]
-            log_start = int(math.ceil(math.log(start)))
-            log_end = int(math.ceil(math.log(end)))
-            for i in range(log_start, log_end):
-                latency.append(int(math.exp(i)))
-                latency.append(int(math.exp(i + 0.5)))
-            del self.configs["parameters"]["latency_interval"]
-            self.configs["parameters"]["latency"] = list(set(latency))
-
-        if self.configs["parameters"]["benchmarks"] == "performance":
-            self.configs["parameters"]["n_nodes_run_per_dc"] = list(range(
-                1, self.configs["exp_env"]["antidote_clusters"][0]["n_antidotedb_per_dc"] + 1))
+        )
 
         sweeper = create_combs_queue(result_dir=self.configs["exp_env"]["results_dir"],
                                      parameters=self.configs["parameters"],)
@@ -938,12 +762,10 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         oar_job_ids = None
         while len(sweeper.get_remaining()) > 0:
             if oar_job_ids is None:
-                oar_job_ids, kube_master, elmerfs_hosts = self.setup_env(
-                    kube_master_site, kube_namespace)
+                oar_job_ids, kube_master = self.setup_env(kube_master_site, kube_namespace)
 
             comb = sweeper.get_next()
-            sweeper = self.run_workflow(elmerfs_hosts=elmerfs_hosts,
-                                        kube_master=kube_master,
+            sweeper = self.run_workflow(kube_master=kube_master,
                                         kube_namespace=kube_namespace,
                                         comb=comb,
                                         sweeper=sweeper,)
