@@ -61,7 +61,12 @@ class elmerfs_eval_ovh(performing_actions):
         logger.info('Editing the configuration file')
         cmd = 'sed -i "s/tmp/tmp\/dc-$(hostname)/g" /tmp/varmail.f'
         execute_cmd(cmd, hosts)
+        cmd = 'sed -i "s/run 60/run 300/g" /tmp/varmail.f'
+        execute_cmd(cmd, hosts)
+        logger.info('Clearing cache ')
         cmd = 'rm -rf /tmp/dc-$(hostname)/bigfileset'
+        execute_cmd(cmd, hosts)
+        cmd = 'sync; echo 3 > /proc/sys/vm/drop_caches'
         execute_cmd(cmd, hosts)
         logger.info('Starting filebench')
         cmd = "setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)"
@@ -79,9 +84,6 @@ class elmerfs_eval_ovh(performing_actions):
         logger.info('--------------------------------------')
         logger.info("3. Starting deploying elmerfs on hosts")
 
-        configurator = packages_configurator()
-        configurator.install_packages(["libfuse2", "jq"], elmerfs_hosts)
-
         elmerfs_repo = self.configs["exp_env"]["elmerfs_repo"]
         elmerfs_version = self.configs["exp_env"]["elmerfs_version"]
         elmerfs_file_path = self.configs["exp_env"]["elmerfs_path"]
@@ -96,6 +98,7 @@ class elmerfs_eval_ovh(performing_actions):
             cmd = "pidof elmerfs"
             _, r = execute_cmd(cmd, host)
             pids = r.processes[0].stdout.strip().split(" ")
+
             if len(pids) >= 1 and pids[0] != '':
                 for pid in pids:
                     cmd = "kill %s" % pid.strip()
@@ -634,6 +637,10 @@ class elmerfs_eval_ovh(performing_actions):
             if self.args.attach_volume:
                 self._setup_ovh_kube_volumes(kube_workers, n_pv=3)
 
+        # Install elmerfs dependencies
+        configurator = packages_configurator()
+        configurator.install_packages(["libfuse2", "jq"], kube_workers)
+
         # Installing benchmark for running the experiments
         if self.configs['parameters']['benchmarks'] == 'filebench':
             logger.info('Installing Filebench')
@@ -721,12 +728,16 @@ class elmerfs_eval_ovh(performing_actions):
 
         # copy all YAML template folders to a new one for this experiment run to avoid conflicting
         results_dir_name = (self.configs["exp_env"]["results_dir"]).split('/')[-1]
-        antidote_yaml_path = self.configs["exp_env"]["antidote_yaml_path"]
-        old_path = os.path.dirname(antidote_yaml_path)
-        new_path = old_path + "_" + results_dir_name
+        results_dir_path = os.path.dirname(self.configs["exp_env"]["results_dir"])
+
+        yaml_dir_path = os.path.dirname(self.configs["exp_env"]["antidote_yaml_path"])
+        yaml_dir_name = yaml_dir_path.split('/')[-1]
+
+        new_yaml_dir_name = yaml_dir_name + "_" + results_dir_name
+        new_path = results_dir_path + "/" + new_yaml_dir_name
         if os.path.exists(new_path):
             shutil.rmtree(new_path)
-        shutil.copytree(old_path, new_path)
+        shutil.copytree(yaml_dir_path, new_path)
 
         self.configs["exp_env"]["antidote_yaml_path"] = new_path + "/antidotedb_yaml"
         self.configs["exp_env"]["monitoring_yaml_path"] = new_path + "/monitoring_yaml"
