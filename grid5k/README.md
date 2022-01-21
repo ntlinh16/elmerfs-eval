@@ -7,9 +7,11 @@ You need to clarify three following information in the `exp_setting_elmerfs_eval
 
 * Parameters: is a list of experiment parameters that represent different aspects of the system that you want to examine. Each parameter contains a list of possible values of that aspect.
     * `iteration: [1..2]`: the experiment will be repeat 5 times for a statistically significant result.
-    * `latency: [20, 1000]`: while performing benchmark, the latency between AntidoteDB clusters is change from 20ms to 1 second
-    * `latency_interval: logarithmic scale`: the increasing interval of latency will be calculated by logarithmic scale
-    * `benchmarks: [convergence, performances, contentions]`: three benchmarks will be used to test elmerfs
+    * `benchmarks: [mailserver, videoserver]`: three benchmarks will be used to test elmerfs
+    * `duration: 600`: the time you want to run the workload
+    * `n_client: [1,2,3]`: the number of benckmark processes you want to generate (each benckmark processes will run on one node)
+    *  `n_nodes_per_dc: [3,6,9]`: the number of AntidoteDB node in a cluster
+    
 
 * Experiment environment settings: the path to the results directory; the path to Kubernetes deployment files for AntidoteDB and monitoring system; the elmerfs version information that you want to deploy; the topology of an AntidoteDB cluster; etc.
 
