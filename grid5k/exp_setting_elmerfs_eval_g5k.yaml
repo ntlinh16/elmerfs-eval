@@ -65,8 +65,7 @@ exp_env:
     # the path to the results directory
     results_dir: elmerfs-eval/result
     # the path to the kubernetes yaml files to deploy antidote cluster 
-    antidote_yaml_path: elmerfs-eval/exp_config_files/antidotedb_yaml
-  
+    antidotedb_yaml_path: elmerfs-eval/exp_config_files/antidotedb_yaml
     # the path to the kubernetes yaml files to deploy monitoring services (prometheus and grafana) 
     monitoring_yaml_path: elmerfs-eval/exp_config_files/monitoring_yaml
     # the url to elmerfs repository. the default value is https://github.com/scality/elmerfs

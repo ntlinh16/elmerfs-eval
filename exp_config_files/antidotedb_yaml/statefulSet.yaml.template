@@ -28,10 +28,10 @@ spec:
             app: antidote
       containers:
       - env:
-        - name: ANTIDOTE_TXN_CERT
-          value: 'false'
         - name: SHORT_NAME_PREFIX
           value: ''
+        - name: ANTIDOTE_TXN_CERT
+          value: 'false'
         - name: RING_SIZE
           value: '64'
         - name: PB_PORT
@@ -46,7 +46,7 @@ spec:
               fieldPath: metadata.name
         - name: NODE_NAME
           value: antidote@$(HOSTNAME).antidote
-        image: antidotedb/antidote:latest
+        image: ntlinh/antidote:erlang24
         imagePullPolicy: IfNotPresent
         name: antidote
         ports:
