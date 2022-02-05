@@ -307,9 +307,8 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         execute_cmd(cmd, kube_workers)
 
         # Installing filebench for running the experiments
-        if self.configs['parameters']['benchmarks'] in ['mailserver', 'videoserver']:
-            logger.info('Installing Filebench')
-            self.install_filebench(kube_workers)
+        logger.info('Installing Filebench')
+        self.install_filebench(kube_workers)
 
     def setup_env(self, kube_master_site, kube_namespace):
         logger.info('Starting configuring the experiment environment')
