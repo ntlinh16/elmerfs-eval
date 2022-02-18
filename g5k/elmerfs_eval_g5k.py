@@ -4,24 +4,24 @@ import shutil
 import traceback
 import random
 
-from cloudal.utils import (
-    get_logger,
-    execute_cmd,
-    parse_config_file,
-    getput_file,
-    ExecuteCommandException,
-)
 from cloudal.action import performing_actions_g5k
-from cloudal.provisioner import g5k_provisioner
-
 from cloudal.configurator import (kubernetes_configurator, 
                                   k8s_resources_configurator, 
                                   antidotedb_configurator, 
                                   packages_configurator,
                                   elmerfs_configurator, 
+                                  filebench_configurator,
                                   CancelException)
-
-from cloudal.experimenter import create_combs_queue, is_job_alive, get_results, define_parameters
+from cloudal.experimenter import (create_paramsweeper,
+                                  is_job_alive, 
+                                  get_results, 
+                                  define_parameters)
+from cloudal.provisioner import g5k_provisioner
+from cloudal.utils import (get_logger,
+                           execute_cmd,
+                           parse_config_file,
+                           getput_file,
+                           ExecuteCommandException,)
 
 from execo_g5k import oardel
 from execo_engine import slugify
@@ -42,6 +42,9 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                                       dest='monitoring',
                                       help='deploy Grafana and Prometheus for monitoring',
                                       action='store_true')
+        self.args_parser.add_argument("--no_config_host", dest="no_config_host",
+                                      help="do not run the functions to config the hosts",
+                                      action="store_true")
 
     def save_results(self, comb, nodes):
         logger.info('----------------------------------')
@@ -52,57 +55,25 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                     remote_result_files=['/tmp/results/*'],
                     local_result_dir=self.configs['exp_env']['results_dir'])
 
-    def run_mailserver(self, elmerfs_hosts, duration, n_client):
-        if n_client == 100:
-            n_hosts = 1
-        else:
-            n_hosts = n_client
-
-        hosts = random.sample(elmerfs_hosts, n_hosts)
-        logger.info('Dowloading Filebench configuration file')
-        cmd = 'wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N'
-        execute_cmd(cmd, hosts)
-
-        logger.info('Editing the configuration file')
-        cmd = 'sed -i "s/tmp/tmp\/dc-$(hostname)/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts)
-        cmd = 'sed -i "s/run 60/run %s/g" /tmp/varmail.f' % duration
-        execute_cmd(cmd, hosts)
-        cmd = 'sed -i "s/name=bigfileset/name=bigfileset-$(hostname)/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts)
-        cmd = 'sed -i "s/meandirwidth=1000000/meandirwidth=1000/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts)
-        if n_client != 100:
-            cmd = 'sed -i "s/nthreads=16/nthreads=32/g" /tmp/varmail.f'
-            execute_cmd(cmd, hosts)
-
-        logger.info('Clearing cache ')
-        cmd = 'rm -rf /tmp/dc-$(hostname)/bigfileset'
-        execute_cmd(cmd, hosts)
-        cmd = 'sync; echo 3 > /proc/sys/vm/drop_caches'
-        execute_cmd(cmd, hosts)
-
-        logger.info('hosts = %s' % hosts)
-        logger.info('Running filebench in %s second' % duration)
-        cmd = 'setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)'
-        execute_cmd(cmd, hosts)
-        return True, hosts
-
-    def run_benchmark(self, comb, elmerfs_hosts):
-        benchmarks = comb['benchmarks']
+    def run_benchmark(self, comb, elmerfs_hosts, elmerfs_mountpoint):
+        benchmark = comb['benchmarks']
         logger.info('-----------------------------------')
-        logger.info('4. Running benchmark %s' % benchmarks)
-        if benchmarks == 'mailserver':
-            is_finished, hosts = self.run_mailserver(elmerfs_hosts, comb['duration'], comb['n_client'])
-            return is_finished, hosts
+        logger.info('4. Running benchmark %s' % benchmark)
+        filebench_hosts = random.sample(elmerfs_hosts, comb['n_clients'])
+        elmerfs_mountpoint='tmp\/dc-$(hostname)'
+        configurator = filebench_configurator()
+        if benchmark == 'mailserver':
+            is_finished = configurator.run_mailserver(filebench_hosts, elmerfs_mountpoint, comb['duration'], comb['n_threads'])
+            return is_finished, filebench_hosts
 
-    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, antidote_ips):
+    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips):
         configurator = elmerfs_configurator()
         is_deploy = configurator.deploy_elmerfs(kube_master=kube_master,
                                                 clusters=self.configs['exp_env']['clusters'],
                                                 kube_namespace=kube_namespace,
                                                 antidote_ips=antidote_ips,
                                                 elmerfs_hosts=elmerfs_hosts,
+                                                elmerfs_mountpoint=elmerfs_mountpoint,
                                                 elmerfs_repo=self.configs['exp_env']['elmerfs_repo'],
                                                 elmerfs_version=self.configs['exp_env']['elmerfs_version'],
                                                 elmerfs_path=self.configs['exp_env']['elmerfs_path'])
@@ -134,7 +105,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         configurator.delete_namespace(kube_namespace)
         configurator.create_namespace(kube_namespace)
 
-    def run_workflow(self, kube_namespace, kube_master, comb, sweeper):
+    def run_workflow(self, kube_namespace, kube_master, comb, sweeper, elmerfs_mountpoint):
 
         comb_ok = False
 
@@ -159,12 +130,11 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             antidote_hosts = list(antidote_ips.keys())
             elmerfs_hosts = antidote_hosts
 
-            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts, antidote_ips)
+            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips)
             if is_elmerfs:
                 if self.args.monitoring:
                     self.deploy_monitoring(kube_master, kube_namespace)
-                is_finished, hosts = self.run_benchmark(comb, elmerfs_hosts)
-
+                is_finished, hosts = self.run_benchmark(comb, elmerfs_hosts, elmerfs_mountpoint)
                 if is_finished:
                     comb_ok = True
                     self.save_results(comb, hosts)
@@ -182,25 +152,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                 logger.warning(slugify(comb) + ' is canceled')
             logger.info('%s combinations remaining\n' % len(sweeper.get_remaining()))
         return sweeper
-    
-    def install_filebench(self, hosts):
-        configurator = packages_configurator()
-        configurator.install_packages(['build-essential', 'bison', 'flex', 'libtool'], hosts)
-
-        cmd = 'wget https://github.com/filebench/filebench/archive/refs/tags/1.5-alpha3.tar.gz -P /tmp/ -N'
-        execute_cmd(cmd, hosts)
-        cmd = 'tar -xf /tmp/1.5-alpha3.tar.gz --directory /tmp/'
-        execute_cmd(cmd, hosts)
-        cmd = '''cd /tmp/filebench-1.5-alpha3/ &&
-                 libtoolize &&
-                 aclocal &&
-                 autoheader &&
-                 automake --add-missing &&
-                 autoconf &&
-                 ./configure &&
-                 make &&
-                 make install'''
-        execute_cmd(cmd, hosts)
+ 
     def _set_kube_workers_label(self, kube_workers):
         logger.info('Set labels for all kubernetes workers')
         configurator = k8s_resources_configurator()
@@ -272,7 +224,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         logger.info('Finish configuring the Kubernetes cluster\n')
         return kube_workers
 
-    def config_host(self, kube_master_site, kube_namespace):
+    def config_host(self, kube_master_site, kube_namespace, elmerfs_mountpoint):
         kube_master = self.args.kube_master
 
         if self.args.kube_master is None:
@@ -298,19 +250,21 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             deployed_hosts = configurator.get_k8s_resources(resource='node')
             kube_workers = [host.metadata.name for host in deployed_hosts.items]
             kube_workers.remove(kube_master)
+        
+        if not self.args.no_config_host:
+            logger.info('Installing elmerfs dependencies')
+            configurator = packages_configurator()
+            configurator.install_packages(['libfuse2', 'wget', 'jq'], kube_workers)
+            # Create mount point on elmerfs hosts
+            cmd = 'mkdir -p %s' % elmerfs_mountpoint
+            execute_cmd(cmd, kube_workers)
 
-        logger.info('Installing elmerfs dependencies')
-        configurator = packages_configurator()
-        configurator.install_packages(['libfuse2', 'wget', 'jq'], kube_workers)
-        # Create mount point on elmerfs hosts
-        cmd = 'mkdir -p /tmp/dc-$(hostname)'
-        execute_cmd(cmd, kube_workers)
+            # Installing filebench for running the experiments
+            logger.info('Installing Filebench')
+            configurator = filebench_configurator()
+            configurator.install_filebench(kube_workers)
 
-        # Installing filebench for running the experiments
-        logger.info('Installing Filebench')
-        self.install_filebench(kube_workers)
-
-    def setup_env(self, kube_master_site, kube_namespace):
+    def setup_env(self, kube_master_site, kube_namespace, elmerfs_mountpoint):
         logger.info('Starting configuring the experiment environment')
         logger.debug('Init provisioner: g5k_provisioner')
         provisioner = g5k_provisioner(configs=self.configs,
@@ -334,7 +288,7 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                     kube_master = host
                     break
 
-        self.config_host(kube_master, kube_namespace)
+        self.config_host(kube_master, kube_namespace, elmerfs_mountpoint)
 
         logger.info('Finish configuring nodes\n')
 
@@ -374,10 +328,9 @@ class elmerfs_eval_g5k(performing_actions_g5k):
 
         self.configs['exp_env']['antidotedb_yaml_path'] = new_path + '/antidotedb_yaml'
         self.configs['exp_env']['monitoring_yaml_path'] = new_path + '/monitoring_yaml'
-
         return kube_master_site
 
-    def run(self):
+    def create_combination_queue(self):
         logger.debug('Parse and convert configs for G5K provisioner')
         self.configs = parse_config_file(self.args.config_file_path)
 
@@ -392,25 +345,31 @@ class elmerfs_eval_g5k(performing_actions_g5k):
 
         logger.info('''Your largest topology:
                         Antidote DCs: %s
-                        n_antidotedb_per_DC: %s  ''' % (
-            len(self.configs['exp_env']['clusters']),
-            max(self.normalized_parameters['n_nodes_per_dc'])
-        )
-        )
+                        n_antidotedb_per_DC: %s  ''' % (len(self.configs['exp_env']['clusters']),
+                                                        max(self.normalized_parameters['n_nodes_per_dc']))
+                    )
 
-        sweeper = create_combs_queue(result_dir=self.configs['exp_env']['results_dir'],
-                                     parameters=self.configs['parameters'],)
+        logger.info('Creating the combination list')
+        sweeper = create_paramsweeper(result_dir=self.configs['exp_env']['results_dir'],
+                                      parameters=self.normalized_parameters)
+        return sweeper, kube_master_site
+
+    def run(self):
+        sweeper, kube_master_site = self.create_combination_queue()
+
         kube_namespace = 'elmerfs-exp'
+        elmerfs_mountpoint = '/tmp/dc-$(hostname)'
         oar_job_ids = None
         while len(sweeper.get_remaining()) > 0:
             if oar_job_ids is None:
-                oar_job_ids, kube_master = self.setup_env(kube_master_site, kube_namespace)
+                oar_job_ids, kube_master = self.setup_env(kube_master_site, kube_namespace, elmerfs_mountpoint)
 
             comb = sweeper.get_next()
             sweeper = self.run_workflow(kube_master=kube_master,
                                         kube_namespace=kube_namespace,
                                         comb=comb,
-                                        sweeper=sweeper,)
+                                        sweeper=sweeper,
+                                        elmerfs_mountpoint = elmerfs_mountpoint)
 
             if not is_job_alive(oar_job_ids):
                 oardel(oar_job_ids)

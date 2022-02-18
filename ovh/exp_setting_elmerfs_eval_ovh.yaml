@@ -33,7 +33,8 @@ parameters:
     # the information for the workload
     benchmarks: ['mailserver', 'videoserver']
     duration: 600
-    n_client: [1,2,3]
+    n_clients: [1,2,3]
+    n_threads: [1..12]
 
     ### configuration of topology on 1 site (or Grid5k cluster)
     # the number of AntidoteDB nodes

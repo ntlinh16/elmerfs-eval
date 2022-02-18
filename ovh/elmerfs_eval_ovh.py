@@ -3,17 +3,25 @@ import shutil
 import traceback
 import random
 
-
-from cloudal.utils import get_logger, execute_cmd, parse_config_file, getput_file, ExecuteCommandException
 from cloudal.action import performing_actions
-from cloudal.provisioner import ovh_provisioner
 from cloudal.configurator import (kubernetes_configurator, 
                                   k8s_resources_configurator, 
                                   antidotedb_configurator, 
                                   packages_configurator,
-                                  elmerfs_configurator, 
+                                  elmerfs_configurator,
+                                  filebench_configurator, 
                                   CancelException)
-from cloudal.experimenter import create_paramsweeper, define_parameters, get_results
+from cloudal.experimenter import (create_paramsweeper, 
+                                  define_parameters, 
+                                  get_results, 
+                                  delete_ovh_nodes, 
+                                  is_node_active)
+from cloudal.provisioner import ovh_provisioner
+from cloudal.utils import (get_logger, 
+                           execute_cmd, 
+                           parse_config_file, 
+                           getput_file, 
+                           ExecuteCommandException)
 
 from execo_engine import slugify
 from kubernetes import config
@@ -41,6 +49,9 @@ class elmerfs_eval_ovh(performing_actions):
         self.args_parser.add_argument('--attach_volume', dest='attach_volume',
                                       help='attach an external volume to every data node',
                                       action='store_true')
+        self.args_parser.add_argument("--no_config_host", dest="no_config_host",
+                                      help="do not run the functions to config the hosts",
+                                      action="store_true")
 
     def save_results(self, comb, hosts):
         logger.info('----------------------------------')
@@ -51,57 +62,25 @@ class elmerfs_eval_ovh(performing_actions):
                                remote_result_files=['/tmp/results/*'],
                                local_result_dir=self.configs['exp_env']['results_dir'])
 
-    def run_mailserver(self, elmerfs_hosts, duration, n_client):
-        if n_client == 100:
-            n_hosts = 1
-        else:
-            n_hosts = n_client
-
-        hosts = random.sample(elmerfs_hosts, n_hosts)
-        logger.info('Dowloading Filebench configuration file')
-        cmd = 'wget https://raw.githubusercontent.com/filebench/filebench/master/workloads/varmail.f -P /tmp/ -N'
-        execute_cmd(cmd, hosts)
-
-        logger.info('Editing the configuration file')
-        cmd = 'sed -i "s/tmp/tmp\/dc-$(hostname)/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts)
-        cmd = 'sed -i "s/run 60/run %s/g" /tmp/varmail.f' % duration
-        execute_cmd(cmd, hosts)
-        cmd = 'sed -i "s/name=bigfileset/name=bigfileset-$(hostname)/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts)
-        cmd = 'sed -i "s/meandirwidth=1000000/meandirwidth=1000/g" /tmp/varmail.f'
-        execute_cmd(cmd, hosts)
-        if n_client != 100:
-            cmd = 'sed -i "s/nthreads=16/nthreads=32/g" /tmp/varmail.f'
-            execute_cmd(cmd, hosts)
-
-        logger.info('Clearing cache ')
-        cmd = 'rm -rf /tmp/dc-$(hostname)/bigfileset'
-        execute_cmd(cmd, hosts)
-        cmd = 'sync; echo 3 > /proc/sys/vm/drop_caches'
-        execute_cmd(cmd, hosts)
-
-        logger.info('hosts = %s' % hosts)
-        logger.info('Running filebench in %s second' % duration)
-        cmd = 'setarch $(arch) -R filebench -f /tmp/varmail.f > /tmp/results/filebench_$(hostname)'
-        execute_cmd(cmd, hosts)
-        return True, hosts
-
-    def run_benchmark(self, comb, elmerfs_hosts):
-        benchmark = comb['benchmarks']
-        logger.info('--------------------------------------')
-        logger.info('4. Starting benchmark: %s' % benchmark)
-        if benchmark == 'mailserver':
-            is_finished, hosts = self.run_mailserver(elmerfs_hosts, comb['duration'], comb['n_client'])
+    def run_benchmark(self, comb, elmerfs_hosts, elmerfs_mountpoint):
+        benchmarks = comb['benchmarks']
+        logger.info('-----------------------------------')
+        logger.info('4. Running benchmark %s' % benchmarks)
+        filebench_hosts = random.sample(elmerfs_hosts, comb['n_clients'])
+        elmerfs_mountpoint='tmp\/dc-$(hostname)'
+        configurator = filebench_configurator()
+        if benchmarks == 'mailserver':
+            is_finished, hosts = configurator.run_mailserver(filebench_hosts, elmerfs_mountpoint, comb['duration'], comb['n_threads'])
             return is_finished, hosts
 
-    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, antidote_ips):
+    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips):
         configurator = elmerfs_configurator()
         is_deploy = configurator.deploy_elmerfs(kube_master=kube_master,
                                                 clusters=self.configs['exp_env']['clusters'],
                                                 kube_namespace=kube_namespace,
                                                 antidote_ips=antidote_ips,
                                                 elmerfs_hosts=elmerfs_hosts,
+                                                elmerfs_mountpoint=elmerfs_mountpoint,
                                                 elmerfs_repo=self.configs['exp_env']['elmerfs_repo'],
                                                 elmerfs_version=self.configs['exp_env']['elmerfs_version'],
                                                 elmerfs_path=self.configs['exp_env']['elmerfs_path'])
@@ -133,7 +112,7 @@ class elmerfs_eval_ovh(performing_actions):
         configurator.delete_namespace(kube_namespace)
         configurator.create_namespace(kube_namespace)
 
-    def run_exp_workflow(self, kube_namespace, comb, kube_master, sweeper):
+    def run_exp_workflow(self, kube_namespace, comb, kube_master, sweeper, elmerfs_mountpoint):
         comb_ok = False
         try:
             logger.info('=======================================')
@@ -157,11 +136,11 @@ class elmerfs_eval_ovh(performing_actions):
             antidote_hosts = list(antidote_ips.keys())
             elmerfs_hosts = antidote_hosts
             
-            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts, antidote_ips)
+            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips)
             if is_elmerfs:
                 if self.args.monitoring:
                     self.deploy_monitoring(kube_master, kube_namespace)
-                is_finished, hosts = self.run_benchmark(comb, elmerfs_hosts)
+                is_finished, hosts = self.run_benchmark(comb, elmerfs_hosts, elmerfs_mountpoint)
                 if is_finished:
                     comb_ok = True
                     self.save_results(comb, hosts)
@@ -179,25 +158,6 @@ class elmerfs_eval_ovh(performing_actions):
                 logger.warning(slugify(comb) + ' is canceled')
             logger.info('%s combinations remaining\n' % len(sweeper.get_remaining()))
         return sweeper
-
-    def install_filebench(self, hosts):
-        configurator = packages_configurator()
-        configurator.install_packages(['build-essential', 'bison', 'flex', 'libtool'], hosts)
-
-        cmd = 'wget https://github.com/filebench/filebench/archive/refs/tags/1.5-alpha3.tar.gz -P /tmp/ -N'
-        execute_cmd(cmd, hosts)
-        cmd = 'tar -xf /tmp/1.5-alpha3.tar.gz --directory /tmp/'
-        execute_cmd(cmd, hosts)
-        cmd = '''cd /tmp/filebench-1.5-alpha3/ &&
-                 libtoolize &&
-                 aclocal &&
-                 autoheader &&
-                 automake --add-missing &&
-                 autoconf &&
-                 ./configure &&
-                 make &&
-                 make install'''
-        execute_cmd(cmd, hosts)
 
     def _setup_ovh_kube_volumes(self, kube_workers, n_pv=3):
         logger.info('Setting volumes on %s kubernetes workers' % len(kube_workers))
@@ -259,7 +219,7 @@ class elmerfs_eval_ovh(performing_actions):
     def setup_k8s_env(self, kube_master, kube_namespace, kube_workers):
         self._get_credential(kube_master)
 
-        logger.info('Create k8s namespace "%s" for this experiment' % kube_namespace)
+        logger.info('Create k8s namespace "%s" for running resources of this experiment' % kube_namespace)
         configurator = k8s_resources_configurator()
         configurator.create_namespace(namespace=kube_namespace)
 
@@ -270,7 +230,7 @@ class elmerfs_eval_ovh(performing_actions):
 
         logger.info('Finish deploying the Kubernetes cluster')
 
-    def config_host(self, kube_master, kube_namespace):
+    def config_host(self, kube_master, kube_namespace, elmerfs_mountpoint):
         logger.info('Starting configuring nodes')
 
         # configuring Kubernetes environment
@@ -286,19 +246,23 @@ class elmerfs_eval_ovh(performing_actions):
             if self.args.attach_volume:
                 self._setup_ovh_kube_volumes(kube_workers, n_pv=3)
 
-        # Install elmerfs dependencies
-        configurator = packages_configurator()
-        configurator.install_packages(['libfuse2', 'jq'], kube_workers)
+        if not self.args.no_config_host:
+            logger.info('Installing elmerfs dependencies')
+            configurator = packages_configurator()
+            configurator.install_packages(['libfuse2', 'jq'], kube_workers)
+            # Create mount point on elmerfs hosts
+            cmd = 'mkdir -p %s' % elmerfs_mountpoint
+            execute_cmd(cmd, kube_workers)
 
-        # Installing benchmark for running the experiments
-        if self.configs['parameters']['benchmarks'] in ['mailserver', 'videoserver']:
+            # Installing benchmark for running the experiments
             logger.info('Installing Filebench')
-            self.install_filebench(kube_workers)
+            configurator = filebench_configurator()
+            configurator.install_filebench(kube_workers)
 
         logger.info('Finish configuring nodes')
         return kube_master
 
-    def setup_env(self, kube_master_site, kube_namespace):
+    def setup_env(self, kube_master_site, kube_namespace, elmerfs_mountpoint):
         logger.info('STARTING SETTING THE EXPERIMENT ENVIRONMENT')
         logger.info('Starting provisioning nodes on OVHCloud')
 
@@ -307,7 +271,8 @@ class elmerfs_eval_ovh(performing_actions):
 
         self.nodes = provisioner.nodes
         self.hosts = provisioner.hosts
-        node_ids_file = provisioner.node_ids_file
+        node_ids = provisioner.node_ids
+        driver = provisioner.driver
 
         kube_master = self.args.kube_master
         if kube_master is None:
@@ -345,10 +310,10 @@ class elmerfs_eval_ovh(performing_actions):
                    chmod 777 /tmp'''
             execute_cmd(cmd, data_hosts)
 
-        self.config_host(kube_master, kube_namespace)
+        self.config_host(kube_master, kube_namespace, elmerfs_mountpoint)
 
         logger.info('FINISH SETTING THE EXPERIMENT ENVIRONMENT\n')
-        return kube_master, node_ids_file
+        return kube_master, node_ids, driver
 
     def create_configs(self):
         logger.debug('Get the k8s master node')
@@ -392,8 +357,8 @@ class elmerfs_eval_ovh(performing_actions):
         self.configs['exp_env']['monitoring_yaml_path'] = new_path + '/monitoring_yaml'
 
         return kube_master_site
-
-    def run(self):
+    
+    def create_combination_queue(self):
         logger.debug('Parse and convert configs for OVH provisioner')
         self.configs = parse_config_file(self.args.config_file_path)
         # Add the number of Antidote DC as a parameter
@@ -416,20 +381,43 @@ class elmerfs_eval_ovh(performing_actions):
         logger.info('Creating the combination list')
         sweeper = create_paramsweeper(result_dir=self.configs['exp_env']['results_dir'],
                                       parameters=self.normalized_parameters)
+        return sweeper, kube_master_site
+
+
+    def run(self):
+        sweeper, kube_master_site = self.create_combination_queue()
 
         kube_namespace = 'elmerfs-exp'
-        node_ids_file = None
+        elmerfs_mountpoint = '/tmp/dc-$(hostname)'
+        node_ids = None
         while len(sweeper.get_remaining()) > 0:
-            if node_ids_file is None:
-                kube_master, node_ids_file = self.setup_env(kube_master_site, kube_namespace)
+            if node_ids is None:
+                kube_master, node_ids, driver = self.setup_env(kube_master_site, kube_namespace, elmerfs_mountpoint)
             comb = sweeper.get_next()
             sweeper = self.run_exp_workflow(kube_namespace=kube_namespace,
                                             kube_master=kube_master,
                                             comb=comb,
-                                            sweeper=sweeper)
-            # if not is_nodes_alive(node_ids_file):
-            #     node_ids_file = None
+                                            sweeper=sweeper,
+                                            elmerfs_mountpoint=elmerfs_mountpoint)
+
+            logger.info('==================================================')
+            logger.info('Checking whether all provisioned nodes are running')
+            is_nodes_alive, _ = is_node_active(node_ids=node_ids, 
+                                               project_id=self.configs['project_id'], 
+                                               driver=driver)
+            if not is_nodes_alive:
+                logger.info('Deleting old provisioned nodes')
+                delete_ovh_nodes(node_ids=node_ids,
+                                project_id=self.configs['project_id'], 
+                                driver=driver)
+                node_ids = None
         logger.info('Finish the experiment!!!')
+        logger.info('The provisioned nodes keep running')
+        if not self.args.keep_nodes:
+            logger.info('Deleting provisioned nodes after finishing the experiment')
+            delete_ovh_nodes(node_ids=node_ids,
+                            project_id=self.configs['project_id'], 
+                            driver=driver)
 
 
 if __name__ == '__main__':
