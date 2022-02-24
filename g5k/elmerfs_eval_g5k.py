@@ -1,14 +1,15 @@
 from logging import raiseExceptions
 import os
+from re import L
 import shutil
 import traceback
 import random
+import math
 
 from cloudal.action import performing_actions_g5k
 from cloudal.configurator import (kubernetes_configurator, 
                                   k8s_resources_configurator, 
-                                  antidotedb_configurator, 
-                                  packages_configurator,
+                                  antidotedb_configurator,
                                   elmerfs_configurator, 
                                   filebench_configurator,
                                   CancelException)
@@ -66,17 +67,15 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             is_finished = configurator.run_mailserver(filebench_hosts, elmerfs_mountpoint, comb['duration'], comb['n_threads'])
             return is_finished, filebench_hosts
 
-    def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips):
+    def deploy_elmerfs(self, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips):
+        logger.info('-----------------------------------------')
+        logger.info('3. Starting deploying elmerfs on %s hosts' % len(elmerfs_hosts))
         configurator = elmerfs_configurator()
-        is_deploy = configurator.deploy_elmerfs(kube_master=kube_master,
-                                                clusters=self.configs['exp_env']['clusters'],
+        is_deploy = configurator.deploy_elmerfs(clusters=self.configs['exp_env']['clusters'],
                                                 kube_namespace=kube_namespace,
                                                 antidote_ips=antidote_ips,
                                                 elmerfs_hosts=elmerfs_hosts,
-                                                elmerfs_mountpoint=elmerfs_mountpoint,
-                                                elmerfs_repo=self.configs['exp_env']['elmerfs_repo'],
-                                                elmerfs_version=self.configs['exp_env']['elmerfs_version'],
-                                                elmerfs_path=self.configs['exp_env']['elmerfs_path'])
+                                                elmerfs_mountpoint=elmerfs_mountpoint)
         return is_deploy
 
     def deploy_monitoring(self, kube_master, kube_namespace):
@@ -96,6 +95,63 @@ class elmerfs_eval_g5k(performing_actions_g5k):
                                        antidotedb_yaml_path=self.configs['exp_env']['antidotedb_yaml_path'], 
                                        clusters=self.configs['exp_env']['clusters'], 
                                        kube_namespace=kube_namespace)
+
+    def get_latency(self, hostA, hostB):
+        cmd = "ping -c 4 %s" % hostB
+        _, r = execute_cmd(cmd, hostA)
+        tokens = r.processes[0].stdout.strip().split('\r\n')[3].split('time=')
+        logger.info('tokens = %s' % tokens)
+        if len(tokens) == 2:
+            return  math.ceil(float(tokens[1].split()[0]))
+        raise CancelException("Cannot get latency between nodes")
+    
+    def reset_latency(self):
+        """Delete the Limitation of latency in host"""
+        logger.info("--Remove network latency on hosts")
+        cmd = "tcdel flannel.1 --all"
+        execute_cmd(cmd, self.hosts)
+
+    def set_latency(self, latency, kube_namespace):
+        """Limit the latency in host"""
+        logger.info('---------------------------------------')
+        logger.info('Setting network latency = %s on hosts' % latency)
+        antidote_dc = dict()
+        for cluster in self.configs["exp_env"]["clusters"]:
+            antidote_dc[cluster] = dict()
+            antidote_dc[cluster]['host_names'] = list()
+            antidote_dc[cluster]['pod_names'] = list()
+            antidote_dc[cluster]['pod_ips'] = list()
+        configurator = k8s_resources_configurator()
+        antidote_pods = configurator.get_k8s_resources(resource="pod",
+                                                       label_selectors="app=antidote",
+                                                       kube_namespace=kube_namespace,)
+        for pod in antidote_pods.items:
+            cluster = pod.spec.node_name.split("-")[0].strip()
+            if pod.spec.node_name not in antidote_dc[cluster]['host_names']:
+                antidote_dc[cluster]['host_names'].append(pod.spec.node_name)
+            antidote_dc[cluster]['pod_names'].append(pod.metadata.name)
+            antidote_dc[cluster]['pod_ips'].append(pod.status.pod_ip)
+
+        logger.info('antidote_dc = %s' % antidote_dc)
+
+        for cur_cluster, cur_cluster_info in antidote_dc.items():
+            other_clusters = {cluster_name: cluster_info
+                              for cluster_name, cluster_info in antidote_dc.items() if cluster_name != cur_cluster}
+
+            for other_cluster, cluster_info in other_clusters.items():
+                real_latency = self.get_latency(cur_cluster_info['host_names'][0], cluster_info['host_names'][0])
+                logger.info('latency between %s and %s is: %s' % (cur_cluster, other_cluster, real_latency))
+                if real_latency < latency:
+                    latency_add = (latency - real_latency)/2
+                    logger.info('Add %s to current latency from %s cluster to %s:' % (latency_add, cur_cluster, other_cluster))
+                else:
+                    self.reset_latency()
+                    return False
+                for pod_ip in cluster_info['pod_ips']:
+                    cmd = "tcset flannel.1 --delay %s --network %s" % (latency_add, pod_ip)
+                    logger.info('%s --->  %s, cmd = %s' % (cur_cluster_info['host_names'], pod_ip, cmd))
+                    execute_cmd(cmd, cur_cluster_info['host_names'])
+        return True
     
     def clean_exp_env(self, kube_namespace):
         logger.info('1. Cleaning the experiment environment')
@@ -105,9 +161,10 @@ class elmerfs_eval_g5k(performing_actions_g5k):
         configurator.delete_namespace(kube_namespace)
         configurator.create_namespace(kube_namespace)
 
+
     def run_workflow(self, kube_namespace, kube_master, comb, sweeper, elmerfs_mountpoint):
 
-        comb_ok = False
+        comb_ok = ''
 
         try:
             logger.info('=======================================')
@@ -130,26 +187,36 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             antidote_hosts = list(antidote_ips.keys())
             elmerfs_hosts = antidote_hosts
 
-            is_elmerfs = self.deploy_elmerfs(kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips)
+            is_elmerfs = self.deploy_elmerfs(kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips)
             if is_elmerfs:
                 if self.args.monitoring:
                     self.deploy_monitoring(kube_master, kube_namespace)
+                if len(self.configs['exp_env']['clusters']) > 1:
+                    is_latency = self.set_latency(comb["latency"], kube_namespace)
+                    if not is_latency:
+                        comb_ok = 'skip'
+                        return sweeper                      
                 is_finished, hosts = self.run_benchmark(comb, elmerfs_hosts, elmerfs_mountpoint)
+                if len(self.configs['exp_env']['clusters']) > 1:
+                    self.reset_latency()
                 if is_finished:
-                    comb_ok = True
+                    comb_ok = 'done'
                     self.save_results(comb, hosts)
             else:
                 raise CancelException('Cannot deploy elmerfs')
         except (ExecuteCommandException, CancelException) as e:
             logger.error('Combination exception: %s' % e)
-            comb_ok = False
+            comb_ok = 'cancel'
         finally:
-            if comb_ok:
+            if comb_ok == 'done':
                 sweeper.done(comb)
                 logger.info('Finish combination: %s' % slugify(comb))
-            else:
+            elif comb_ok == 'cancel':
                 sweeper.cancel(comb)
                 logger.warning(slugify(comb) + ' is canceled')
+            else:
+                sweeper.skip(comb)
+                logger.warning(slugify(comb) + ' is skipped due to real_latency is higher than %s' % comb['latency'])
             logger.info('%s combinations remaining\n' % len(sweeper.get_remaining()))
         return sweeper
  
@@ -246,23 +313,51 @@ class elmerfs_eval_g5k(performing_actions_g5k):
             logger.info('Kubernetes master: %s' % kube_master)
             self._get_credential(kube_master)
 
-            configurator = k8s_resources_configurator()
-            deployed_hosts = configurator.get_k8s_resources(resource='node')
-            kube_workers = [host.metadata.name for host in deployed_hosts.items]
-            kube_workers.remove(kube_master)
+            # kube_workers = [host for host in antidote_hosts if host != kube_master]
+            self._setup_g5k_kube_volumes(kube_workers, n_pv=3)
+            self._set_kube_workers_label(kube_workers)
         
         if not self.args.no_config_host:
-            logger.info('Installing elmerfs dependencies')
-            configurator = packages_configurator()
-            configurator.install_packages(['libfuse2', 'wget', 'jq'], kube_workers)
-            # Create mount point on elmerfs hosts
-            cmd = 'mkdir -p %s' % elmerfs_mountpoint
-            execute_cmd(cmd, kube_workers)
-
-            # Installing filebench for running the experiments
-            logger.info('Installing Filebench')
+            logger.info("Installing tcconfig")
+            cmd = "pip3 install tcconfig"
+            execute_cmd(cmd, self.hosts)
+            configurator = elmerfs_configurator()
+            configurator.install_elmerfs(kube_master=kube_master,
+                                         elmerfs_hosts=kube_workers,
+                                         elmerfs_mountpoint=elmerfs_mountpoint,
+                                         elmerfs_repo=self.configs['exp_env']['elmerfs_repo'],
+                                         elmerfs_version=self.configs['exp_env']['elmerfs_version'],
+                                         elmerfs_path=self.configs['exp_env']['elmerfs_path'])
             configurator = filebench_configurator()
             configurator.install_filebench(kube_workers)
+
+    def calculate_latency_range(self):
+        latency_interval = self.configs["parameters"]["latency_interval"]
+        start, end = self.configs["parameters"]["latency"]
+        if latency_interval == "logarithmic scale":
+            latency = [start, end]
+            log_start = int(math.ceil(math.log(start)))
+            log_end = int(math.ceil(math.log(end)))
+            for i in range(log_start, log_end):
+                val = int(math.exp(i))
+                if val < end:
+                    latency.append(int(math.exp(i)))
+                val = int(math.exp(i + 0.5))
+                if val < end:
+                    latency.append(int(math.exp(i + 0.5)))
+        elif isinstance(latency_interval, int):
+            latency = [start]
+            next_latency = start + latency_interval
+            while next_latency < end:
+                latency.append(next_latency)
+                next_latency += latency_interval
+            latency.append(end)
+        else:
+            logger.info('Please give a valid latency_interval ("logarithmic scale" or a number)')
+            exit()
+        del self.configs["parameters"]["latency_interval"]
+        self.configs["parameters"]["latency"] = list(set(latency))
+        logger.info('latency = %s' % self.configs["parameters"]["latency"])
 
     def setup_env(self, kube_master_site, kube_namespace, elmerfs_mountpoint):
         logger.info('Starting configuring the experiment environment')
@@ -336,6 +431,9 @@ class elmerfs_eval_g5k(performing_actions_g5k):
 
         # Add the number of Antidote DC as a parameter
         self.configs['parameters']['n_dc'] = len(self.configs['exp_env']['clusters'])
+
+        if len(self.configs['exp_env']['clusters']) > 1:
+            self.calculate_latency_range()
 
         logger.debug('Normalize the parameter space')
         self.normalized_parameters = define_parameters(self.configs['parameters'])

@@ -53,6 +53,12 @@ parameters:
     ### configuration of topology on 1 site (or Grid5k cluster)
     # the number of AntidoteDB nodes
     n_nodes_per_dc: [3,5,7,9,12]
+
+    ### configuration of the latency between data centers, 
+    ### this parameter only is used in case of multiple data centers
+    latency: [20, 500]
+    latency_interval: logarithmic scale
+    # latency_interval: [logarithmic scale, 50]
     
     
 
@@ -80,4 +86,4 @@ exp_env:
     # if it is null, then the k8s master node will be deployed on the first site you specify in the file clusters below
     kube_master_site: paravance
     # the sites that all the AntidoteDB data centers will be deployed.
-    antidote_clusters: [paravance]
+    antidote_clusters: [paravance, econome, nova]
