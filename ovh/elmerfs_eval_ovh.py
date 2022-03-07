@@ -52,6 +52,9 @@ class elmerfs_eval_ovh(performing_actions):
         self.args_parser.add_argument("--no_config_host", dest="no_config_host",
                                       help="do not run the functions to config the hosts",
                                       action="store_true")
+        self.args_parser.add_argument("-k", dest="keep_nodes",
+                                      help="keep the provisioned nodes after finishing the experiments",
+                                      action="store_true")
 
     def save_results(self, comb, hosts):
         logger.info('----------------------------------')
@@ -70,20 +73,18 @@ class elmerfs_eval_ovh(performing_actions):
         elmerfs_mountpoint='tmp\/dc-$(hostname)'
         configurator = filebench_configurator()
         if benchmarks == 'mailserver':
-            is_finished, hosts = configurator.run_mailserver(filebench_hosts, elmerfs_mountpoint, comb['duration'], comb['n_threads'])
-            return is_finished, hosts
+            is_finished = configurator.run_mailserver(filebench_hosts, elmerfs_mountpoint, comb['duration'], comb['n_threads'])
+            return is_finished, filebench_hosts
 
     def deploy_elmerfs(self, kube_master, kube_namespace, elmerfs_hosts, elmerfs_mountpoint, antidote_ips):
+        logger.info('-----------------------------------------')
+        logger.info('3. Starting deploying elmerfs on %s hosts' % len(elmerfs_hosts))
         configurator = elmerfs_configurator()
-        is_deploy = configurator.deploy_elmerfs(kube_master=kube_master,
-                                                clusters=self.configs['exp_env']['clusters'],
+        is_deploy = configurator.deploy_elmerfs(clusters=self.configs['exp_env']['clusters'],
                                                 kube_namespace=kube_namespace,
                                                 antidote_ips=antidote_ips,
                                                 elmerfs_hosts=elmerfs_hosts,
-                                                elmerfs_mountpoint=elmerfs_mountpoint,
-                                                elmerfs_repo=self.configs['exp_env']['elmerfs_repo'],
-                                                elmerfs_version=self.configs['exp_env']['elmerfs_version'],
-                                                elmerfs_path=self.configs['exp_env']['elmerfs_path'])
+                                                elmerfs_mountpoint=elmerfs_mountpoint)
         return is_deploy
 
     def deploy_monitoring(self, kube_master, kube_namespace):
@@ -106,11 +107,17 @@ class elmerfs_eval_ovh(performing_actions):
 
     def clean_exp_env(self, kube_namespace):
         logger.info('1. Cleaning the experiment environment')
+        logger.info('Delete running filebench process on elmerfs nodes')
+        cmd = 'pkill -f filebench'
+        execute_cmd(cmd, self.hosts)
+
         logger.info('Deleting all k8s running resources from the previous run in namespace "%s"' % kube_namespace)
         logger.debug('Delete namespace "%s" to delete all the running resources, then create it again' % kube_namespace)
         configurator = k8s_resources_configurator()
         configurator.delete_namespace(kube_namespace)
         configurator.create_namespace(kube_namespace)
+
+
 
     def run_exp_workflow(self, kube_namespace, comb, kube_master, sweeper, elmerfs_mountpoint):
         comb_ok = False
@@ -228,7 +235,7 @@ class elmerfs_eval_ovh(performing_actions):
 
         self._setup_ovh_kube_volumes(kube_workers, n_pv=3)
 
-        logger.info('Finish deploying the Kubernetes cluster')
+        logger.info('Finish deploying the Kubernetes cluster\n')
 
     def config_host(self, kube_master, kube_namespace, elmerfs_mountpoint):
         logger.info('Starting configuring nodes')
@@ -247,15 +254,21 @@ class elmerfs_eval_ovh(performing_actions):
                 self._setup_ovh_kube_volumes(kube_workers, n_pv=3)
 
         if not self.args.no_config_host:
-            logger.info('Installing elmerfs dependencies')
+            logger.info("Installing tcconfig")
             configurator = packages_configurator()
-            configurator.install_packages(['libfuse2', 'jq'], kube_workers)
-            # Create mount point on elmerfs hosts
-            cmd = 'mkdir -p %s' % elmerfs_mountpoint
-            execute_cmd(cmd, kube_workers)
+            configurator.install_packages(['python3-pip'], self.hosts)  
+            cmd = "pip3 install tcconfig"
+            execute_cmd(cmd, self.hosts)
+
+            configurator = elmerfs_configurator()
+            configurator.install_elmerfs(kube_master=kube_master,
+                                         elmerfs_hosts=kube_workers,
+                                         elmerfs_mountpoint=elmerfs_mountpoint,
+                                         elmerfs_repo=self.configs['exp_env']['elmerfs_repo'],
+                                         elmerfs_version=self.configs['exp_env']['elmerfs_version'],
+                                         elmerfs_path=self.configs['exp_env']['elmerfs_path'])
 
             # Installing benchmark for running the experiments
-            logger.info('Installing Filebench')
             configurator = filebench_configurator()
             configurator.install_filebench(kube_workers)
 

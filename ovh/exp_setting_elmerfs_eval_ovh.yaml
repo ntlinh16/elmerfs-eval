@@ -12,7 +12,7 @@ application_secret: <your_application_secret>
 consumer_key: <your_consumer_key> 
 project_id: <your_project_id> 
 
-instance_type: b2-7
+instance_type: b2-60
 image: Debian 11
 # The Flex option opts for 50 GB storage, providing faster snapshots and the ability to downgrade later on.
 flexible_instance: False
@@ -31,14 +31,14 @@ parameters:
     iteration: [1..10]
 
     # the information for the workload
-    benchmarks: ['mailserver', 'videoserver']
-    duration: 600
-    n_clients: [1,2,3]
+    benchmarks: ['mailserver']
+    duration: 300
+    n_clients: [18]
     n_threads: [1..12]
 
     ### configuration of topology on 1 site (or Grid5k cluster)
     # the number of AntidoteDB nodes
-    n_nodes_per_dc: [3,5,7,9,12]
+    n_nodes_per_dc: [6]
 
     
 
@@ -65,6 +65,7 @@ exp_env:
     # If it is null, then the k8s master node will be deployed on the first site you specify in the list of clusters below
     kube_master_site: SBG5
     # The region code name on OVHCloud that you want to deploy AntidoteDB data centers.
-    clusters: [SBG5, SGP1, BHS5]
+    clusters: [SBG5, SGP1, BHS3]
+    # clusters: [SBG5, DE1, WAW1] 
 
 
